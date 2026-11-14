@@ -20,10 +20,16 @@ esac
 "$script_directory/nil.sh" check
 "$enigma_sdk_directory/nilbuild" check \
     --project "$enigma_project_root/ext/enigma-client/nil.project.nildata" --sdk "$enigma_sdk_directory"
+"$enigma_sdk_directory/nilbuild" check \
+    --project "$enigma_project_root/storage/nil.project.nildata" --sdk "$enigma_sdk_directory"
 "$script_directory/nil.sh" test --target "$target"
+"$enigma_sdk_directory/nilbuild" test \
+    --project "$enigma_project_root/storage/nil.project.nildata" --sdk "$enigma_sdk_directory" \
+    --target "$target" --filter enigma.storage
 "$script_directory/nil.sh" build --target "$target"
 "$enigma_sdk_directory/nilbuild" build \
     --project "$enigma_project_root/ext/enigma-client/nil.project.nildata" --sdk "$enigma_sdk_directory" --target "$target"
+"$script_directory/build-storage.sh" --target "$target"
 
 test_directory="$(mktemp -d "${TMPDIR:-/tmp}/enigma-cli.XXXXXXXX")"
 trap 'rm -rf -- "$test_directory"' EXIT
@@ -54,7 +60,7 @@ check_case() {
         help)
             [[ ! -s "$test_directory/stderr" ]] || fail_case "$label stderr"
             [[ "$(< "$test_directory/stdout")" == *"Usage: enigma "* ]] || fail_case "$label usage"
-            [[ "$(< "$test_directory/stdout")" == *"No persistence or native isolation."* ]] || fail_case "$label trust boundary"
+            [[ "$(< "$test_directory/stdout")" == *"No native isolation."* ]] || fail_case "$label trust boundary"
             if [[ -e "$test_directory/help" ]]; then
                 cmp -s "$test_directory/stdout" "$test_directory/help" || fail_case "$label output"
             else
@@ -107,3 +113,7 @@ for route in "${routes[@]}"; do
     check_case client-example 0 client-example
     printf 'PASS package example %s\n' "$route"
 done
+
+recovery_routes="$(IFS=,; printf '%s' "${routes[*]}")"
+ENIGMA_TEST_TARGETS="$recovery_routes" NIL_SDK="$enigma_sdk_directory" \
+    python3 -m unittest discover -s "$enigma_project_root/tests" -p 'test_*.py' -v

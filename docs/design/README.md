@@ -13,7 +13,8 @@ temporal database concepts are new.
 ## Implemented slice
 
 [ENI-0001: Evidence views under explicit authority](ENI-0001-evidence-and-authority.md)
-defines the executable contract.
+defines evidence behavior. [ENI-0002: Durable state and fail-closed recovery](ENI-0002-durable-state-and-recovery.md)
+defines the persistence host and restart contract.
 
 | Area | Current behavior |
 | --- | --- |
@@ -23,6 +24,8 @@ defines the executable contract.
 | Bounds | 128 events per store, explicit work/output limits, and separate evidence-list completeness. |
 | Authority | Trusted-host entity/session grants with exact audience, scope, rights, logical expiry, attenuation, and live ancestor revocation. |
 | Client | Typed operations and a discoverable surface under [`ext/enigma-client`](../../ext/enigma-client/README.md), outside `nil.std`. |
+| Persistence | Matrix checkpoint codec and validated recovery, with POSIX host locking, private files, atomic replacement, and sync-before-receipt ordering. |
+| Restart authority | Retain permission definitions, counters, ancestry, revocations, and clock floor; retire all old session grants and commit a fresh incarnation before `ready`. |
 
 Each store has independent IDs, revisions, capacity, and work budgets. A failed
 write does not advance its revision. Current authority is required even for an
@@ -31,7 +34,9 @@ structured `limit` response when the required scan is too large.
 
 The implementation is Matrix, configured through NILData. The canonical surface
 is the typed evidence operation model. No text query parser, inference system,
-causal dependency model, persistence, network transport, or cryptography exists.
+causal dependency model, network transport, or cryptography exists. Direct
+embedded use remains volatile; durable receipts are supplied only by the
+separate POSIX storage host.
 
 ## Authority direction
 
@@ -46,13 +51,24 @@ ticks. It does not authenticate entities or obtain native task/channel/session
 provenance. The host must establish fresh context for each dispatch; a copied
 client context is not a live clock. Matrix class fields are public, so direct
 same-process memory access is outside the API policy boundary. There is no
-hostile-process isolation, realtime-expiry guarantee, persistent security state,
-or durable revocation. See the [security policy](../../SECURITY.md).
+hostile-process isolation, realtime-expiry guarantee, or native Anomalous adapter.
+See the [security policy](../../SECURITY.md).
 
-Grant IDs, evidence IDs, and revisions identify state only within their live
-registry/store instances. Replacement or restart can reuse numbers; issuer/store
-epochs and retained replay state do not exist yet. Old numeric IDs and client
-contexts must not be reused as authority under replacement instances.
+The durable path retains evidence and security state together. Opening a store
+retains old grant rows and revocations, marks every old session grant retired,
+and commits a fresh random incarnation before admitting requests. New authority
+requires explicit re-admission; old-incarnation requests receive a fixed denial.
+Corruption or missing canonical state fails closed instead of restoring an older
+permission snapshot. There is no grant-ID recycling or compaction: the retained
+registry can exhaust its 256-grant ceiling and then fails closed.
+
+Durability assumes a trusted owner and storage ancestry plus a local POSIX
+filesystem honoring sync, atomic rename, and advisory locks. A coherent older
+checkpoint restored outside the protocol cannot be detected without separately
+trusted monotonic state. The current recovery path prevents saved session
+authority from being restored; it does not prove general anti-rollback, durable
+replay/idempotency accounting, or hardware power-cut behavior. See [the
+persistence guide](../persistence.md).
 
 ## Next questions and milestones
 
@@ -62,9 +78,9 @@ contexts must not be reused as authority under replacement instances.
 2. **Richer evidence semantics:** evaluate typed values, causal dependencies,
    derived conclusions, and changes that invalidate them. Define how authority
    and provenance propagate before exposing cross-scope reasoning.
-3. **Durable state:** specify the event format, transactions, corruption and crash
-   behavior, restart epochs, revocation recovery, migrations, and backup/restore.
-   Prove guarantees through fault and recovery tests before claiming them.
+3. **Persistence beyond the bounded checkpoint:** define compaction without
+   authority-ID reuse, migrations, backup/restore, durable replay/idempotency,
+   externally anchored rollback detection, and broader filesystem qualification.
 4. **Human language surface:** design bounded Matrix-inspired syntax that compiles
    into the same typed operations and authority checks. A parser must not execute
    arbitrary Matrix or grant authority from text.

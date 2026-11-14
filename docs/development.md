@@ -1,7 +1,8 @@
 # Development
 
-Enigma's implementation and unit tests are Matrix. Bash scripts provide
-toolchain and validation glue. No other database is used to implement this seed.
+Enigma's engine, checkpoint codec, and state validation are Matrix. Bash supplies
+toolchain glue; Python 3 supplies the POSIX filesystem host and fault/restart
+verification. No other database implements Enigma's persistence.
 
 ## Get the SDK
 
@@ -47,6 +48,7 @@ From the Enigma project directory:
 ./scripts/nil.sh run --target native -- --version
 ./scripts/nil.sh run -- --demo
 ./scripts/nil.sh run -- --surface
+./scripts/build-storage.sh --target all
 ./scripts/test.sh
 ```
 
@@ -55,10 +57,47 @@ sets `NIL_STRICT_BOUNDS=1`, including for tests. This is required because unchec
 array access would undermine storage correctness as the engine develops. The
 environment setting is a runtime check, not a database security boundary.
 
-`scripts/test.sh` checks both projects, runs colocated Matrix tests through the
-main import graph, builds the requested execution targets for the engine and
-companion example, and checks the CLI, surface, demo, and package contracts.
+`scripts/test.sh` checks the engine, companion, and storage-worker projects,
+runs Matrix tests, builds the requested execution targets, checks the CLI and
+package examples, and exercises Python filesystem faults and process recovery.
 Its default is both VM and native; `--target vm` or `--target native` selects one.
+
+## Durable host
+
+The installed SDK's atomic file publication lacks a parent-directory sync
+barrier and file locking; its ordinary stream flush is not an `fsync`. The
+POSIX-only `scripts/store.py` supplies those operations without changing the NIL
+framework. Python 3 is required for this path. It invokes the separately built
+Matrix worker and does not build it implicitly.
+
+```sh
+./scripts/build-storage.sh --target vm
+mkdir -p data
+python3 scripts/store.py init data/example --scope work
+python3 scripts/store.py serve data/example
+```
+
+Add `--target native` to use the native worker after building that target. Keep
+the parent directory available and trusted; `init` exclusively creates the
+private database directory and will not replace an existing one. `serve` opens
+only an existing store and holds its nonblocking writer lock for the session.
+It rotates the incarnation and durably retires every previous session grant
+before `ready`; re-admission and new grants are explicit host operations.
+
+See [the persistence guide](persistence.md) for line-delimited JSON requests,
+receipt semantics, and recovery behavior. Do not infer a durable acknowledgement
+from a direct Matrix worker response or an `enigma.client` call. Only the host's
+receipt follows file and directory synchronization.
+
+Focused host fault tests can run without a built Matrix worker:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_durable_host.py
+```
+
+Those tests inject a private worker/syscall fixture. They establish host
+ordering and failure handling, not Matrix policy semantics or hardware power-cut
+qualification. Full verification also uses real VM/native worker processes.
 
 Build products stay in the ignored `build/` directory. Keep local databases,
 backups, keys, and credentials out of Git; use synthetic fixtures in tests.

@@ -1,0 +1,453 @@
+book enigma.storage
+
+read everything from nil.std.nildata
+read durable_state, new_state, decode_state, encode_state, exact_object,
+    field_value, field_text, field_number from enigma.persistence
+read access_context from enigma.authority
+read proposition from enigma.ledger
+
+empty_object returns `Value` begin paragraph
+    give (new_object with nothing).unwrap with nothing
+end paragraph
+
+put_text receives node as `Value`, key as text, input as text returns `Value` begin paragraph
+    value replacement is (string_value with input).unwrap with nothing
+    give (object_set with node, key, replacement).unwrap with nothing
+end paragraph
+
+put_number receives node as `Value`, key as text, input as number returns `Value` begin paragraph
+    value replacement is (integer_value with formatted "{input}").unwrap with nothing
+    give (object_set with node, key, replacement).unwrap with nothing
+end paragraph
+
+put_boolean receives node as `Value`, key as text, input as boolean returns `Value` begin paragraph
+    value replacement is (boolean_value with input).unwrap with nothing
+    give (object_set with node, key, replacement).unwrap with nothing
+end paragraph
+
+text_ok receives node as `Value`, key as text, minimum as number, maximum as number returns boolean begin paragraph
+    value found is field_text with node being node, key being key
+    when found.is_error with nothing then
+        give no
+    end when
+    value content is found.unwrap with nothing
+    give (the length of content) is at least minimum and (the length of content) is at most maximum
+end paragraph
+
+number_ok receives node as `Value`, key as text returns boolean begin paragraph
+    value found is field_number with node being node, key being key
+    give not (found.is_error with nothing)
+end paragraph
+
+get_text receives node as `Value`, key as text returns text begin paragraph
+    value found is field_text with node being node, key being key
+    when found.is_error with nothing then
+        give ""
+    end when
+    give found.unwrap with nothing
+end paragraph
+
+get_number receives node as `Value`, key as text returns number begin paragraph
+    value found is field_number with node being node, key being key
+    when found.is_error with nothing then
+        give 0
+    end when
+    give found.unwrap with nothing
+end paragraph
+
+base_receipt receives code as text returns `Value` begin paragraph
+    variable receipt is empty_object with nothing
+    set receipt to put_text with node being receipt, key being "code", input being code
+    set receipt to put_text with node being receipt, key being "instance", input being ""
+    give put_number with node being receipt, key being "generation", input being 0
+end paragraph
+
+bound_receipt receives code as text, snapshot as durable_state returns `Value` begin paragraph
+    variable receipt is base_receipt with code being code
+    when code equals "ok" or code equals "ready" or code equals "created" then
+        set receipt to put_text with node being receipt, key being "instance", input being snapshot.incarnation
+        set receipt to put_number with node being receipt, key being "generation", input being snapshot.generation
+        set receipt to put_text with node being receipt, key being "database_id", input being snapshot.database_id
+    end when
+    give receipt
+end paragraph
+
+packet receives code as text, payload as text, receipt as `Value` returns text begin paragraph
+    variable reply is empty_object with nothing
+    set reply to put_text with node being reply, key being "code", input being code
+    set reply to put_text with node being reply, key being "payload", input being payload
+    set reply to (object_set with reply, "receipt", receipt).unwrap with nothing
+    give (to_json with reply).unwrap with nothing
+end paragraph
+
+failed_packet receives code as text returns text begin paragraph
+    give packet with code being code, payload being "", receipt being (base_receipt with code being code)
+end paragraph
+
+caller_ok receives node as `Value` returns boolean begin paragraph
+    value keys as array of text is ["entity", "session", "audience", "tick"]
+    give (exact_object with node being node, keys being keys) and
+        (text_ok with node being node, key being "entity", minimum being 1, maximum being 128) and
+        (text_ok with node being node, key being "audience", minimum being 1, maximum being 128) and
+        (number_ok with node being node, key being "session") and (number_ok with node being node, key being "tick")
+end paragraph
+
+make_caller receives node as `Value` returns access_context begin paragraph
+    give build access_context with entity being (get_text with node being node, key being "entity"),
+        session being (get_number with node being node, key being "session"),
+        audience being (get_text with node being node, key being "audience"),
+        tick being (get_number with node being node, key being "tick")
+end paragraph
+
+claim_ok receives node as `Value` returns boolean begin paragraph
+    value keys as array of text is ["subject", "relation", "object_value"]
+    give (exact_object with node being node, keys being keys) and
+        (text_ok with node being node, key being "subject", minimum being 1, maximum being 256) and
+        (text_ok with node being node, key being "relation", minimum being 1, maximum being 256) and
+        (text_ok with node being node, key being "object_value", minimum being 1, maximum being 256)
+end paragraph
+
+make_claim receives node as `Value` returns proposition begin paragraph
+    give build proposition with subject being (get_text with node being node, key being "subject"),
+        relation being (get_text with node being node, key being "relation"),
+        object_value being (get_text with node being node, key being "object_value")
+end paragraph
+
+dispatch receives snapshot as durable_state, request as `Value` returns `Value` begin paragraph
+    value operation is get_text with node being request, key being "op"
+    when operation equals "install" then
+        value keys as array of text is ["op", "instance", "entity", "session", "operations", "expires", "work_limit", "result_limit", "tick"]
+        when not (exact_object with node being request, keys being keys) or
+            not (text_ok with node being request, key being "entity", minimum being 1, maximum being 128) or
+            not (number_ok with node being request, key being "session") or not (number_ok with node being request, key being "operations") or
+            not (number_ok with node being request, key being "expires") or not (number_ok with node being request, key being "work_limit") or
+            not (number_ok with node being request, key being "result_limit") or not (number_ok with node being request, key being "tick") then
+            give base_receipt with code being "invalid"
+        end when
+        value issued is snapshot.authority.install with entity being (get_text with node being request, key being "entity"),
+            session being (get_number with node being request, key being "session"), scope being snapshot.store.scope_name,
+            operations being (get_number with node being request, key being "operations"), expires being (get_number with node being request, key being "expires"),
+            work_limit being (get_number with node being request, key being "work_limit"), result_limit being (get_number with node being request, key being "result_limit"),
+            tick being (get_number with node being request, key being "tick")
+        value receipt is bound_receipt with code being issued.code, snapshot being snapshot
+        give put_number with node being receipt, key being "grant_id", input being issued.grant_id
+    end when
+
+    value caller_node is field_value with node being request, key being "caller"
+    when not (caller_ok with node being caller_node) then
+        give base_receipt with code being "invalid"
+    end when
+    value caller is make_caller with node being caller_node
+    variable grant_key as text is "grant_id"
+    when operation equals "delegate" then
+        set grant_key to "parent_id"
+    end when
+    when not (number_ok with node being request, key being grant_key) then
+        give base_receipt with code being "invalid"
+    end when
+    value grant_id is get_number with node being request, key being grant_key
+
+    when operation equals "revoke" then
+        value keys as array of text is ["op", "instance", "caller", "grant_id"]
+        when not (exact_object with node being request, keys being keys) then
+            give base_receipt with code being "invalid"
+        end when
+        value revoked is snapshot.authority.revoke with caller being caller, grant_id being grant_id
+        value receipt is bound_receipt with code being revoked.code, snapshot being snapshot
+        give put_number with node being receipt, key being "grant_id", input being revoked.grant_id
+    end when
+
+    variable right as number is 0
+    when operation equals "resolve" or operation equals "inspect" then
+        set right to 1
+    end when
+    when operation equals "support" or operation equals "oppose" then
+        set right to 2
+    end when
+    when operation equals "withdraw" then
+        set right to 4
+    end when
+    when operation equals "delegate" then
+        set right to 8
+    end when
+    when right equals 0 then
+        give base_receipt with code being "invalid"
+    end when
+    value access is snapshot.authority.authorize with caller being caller, grant_id being grant_id,
+        scope being snapshot.store.scope_name, operation being right
+    when access.code does not equal "ok" then
+        give base_receipt with code being "denied"
+    end when
+
+    when operation equals "delegate" then
+        value keys as array of text is ["op", "instance", "caller", "parent_id", "entity", "session", "operations", "expires", "work_limit", "result_limit"]
+        when not (exact_object with node being request, keys being keys) or
+            not (text_ok with node being request, key being "entity", minimum being 1, maximum being 128) or
+            not (number_ok with node being request, key being "session") or not (number_ok with node being request, key being "operations") or
+            not (number_ok with node being request, key being "expires") or not (number_ok with node being request, key being "work_limit") or
+            not (number_ok with node being request, key being "result_limit") then
+            give base_receipt with code being "invalid"
+        end when
+        value issued is snapshot.authority.delegate with caller being caller, parent_id being grant_id,
+            entity being (get_text with node being request, key being "entity"), session being (get_number with node being request, key being "session"),
+            operations being (get_number with node being request, key being "operations"), expires being (get_number with node being request, key being "expires"),
+            work_limit being (get_number with node being request, key being "work_limit"), result_limit being (get_number with node being request, key being "result_limit")
+        value receipt is bound_receipt with code being issued.code, snapshot being snapshot
+        give put_number with node being receipt, key being "grant_id", input being issued.grant_id
+    end when
+
+    when operation equals "withdraw" then
+        value keys as array of text is ["op", "instance", "caller", "grant_id", "evidence_id", "expected_revision"]
+        when not (exact_object with node being request, keys being keys) or not (number_ok with node being request, key being "evidence_id") or
+            not (number_ok with node being request, key being "expected_revision") then
+            give base_receipt with code being "invalid"
+        end when
+        value removed is snapshot.store.withdraw with authority being snapshot.authority, caller being caller, grant_id being grant_id,
+            scope being snapshot.store.scope_name, evidence_id being (get_number with node being request, key being "evidence_id"),
+            expected_revision being (get_number with node being request, key being "expected_revision")
+        variable receipt is bound_receipt with code being removed.code, snapshot being snapshot
+        set receipt to put_number with node being receipt, key being "revision", input being removed.revision
+        set receipt to put_number with node being receipt, key being "evidence_id", input being removed.evidence_id
+        give put_number with node being receipt, key being "event_id", input being removed.event_id
+    end when
+
+    when operation equals "inspect" then
+        value keys as array of text is ["op", "instance", "caller", "grant_id", "evidence_id", "as_of"]
+        when not (exact_object with node being request, keys being keys) or not (number_ok with node being request, key being "evidence_id") or
+            not (number_ok with node being request, key being "as_of") then
+            give base_receipt with code being "invalid"
+        end when
+        value observed is snapshot.store.inspect with authority being snapshot.authority, caller being caller, grant_id being grant_id,
+            scope being snapshot.store.scope_name, evidence_id being (get_number with node being request, key being "evidence_id"),
+            as_of being (get_number with node being request, key being "as_of")
+        variable receipt is bound_receipt with code being observed.code, snapshot being snapshot
+        set receipt to put_number with node being receipt, key being "revision", input being observed.revision
+        variable item is empty_object with nothing
+        set item to put_number with node being item, key being "id", input being observed.evidence.id
+        set item to put_text with node being item, key being "subject", input being observed.evidence.subject
+        set item to put_text with node being item, key being "relation", input being observed.evidence.relation
+        set item to put_text with node being item, key being "object_value", input being observed.evidence.object_value
+        set item to put_boolean with node being item, key being "supports", input being observed.evidence.supports
+        set item to put_text with node being item, key being "source", input being observed.evidence.source
+        set item to put_text with node being item, key being "entity", input being observed.evidence.entity
+        set item to put_number with node being item, key being "session", input being observed.evidence.session
+        set item to put_number with node being item, key being "asserted_at", input being observed.evidence.asserted_at
+        set item to put_number with node being item, key being "withdrawn_at", input being observed.evidence.withdrawn_at
+        give (object_set with receipt, "evidence", item).unwrap with nothing
+    end when
+
+    value claim_node is field_value with node being request, key being "claim"
+    when not (claim_ok with node being claim_node) then
+        give base_receipt with code being "invalid"
+    end when
+    value claim is make_claim with node being claim_node
+    when operation equals "support" or operation equals "oppose" then
+        value keys as array of text is ["op", "instance", "caller", "grant_id", "claim", "source", "expected_revision"]
+        when not (exact_object with node being request, keys being keys) or
+            not (text_ok with node being request, key being "source", minimum being 1, maximum being 256) or
+            not (number_ok with node being request, key being "expected_revision") then
+            give base_receipt with code being "invalid"
+        end when
+        value added is snapshot.store.assert_claim with authority being snapshot.authority, caller being caller, grant_id being grant_id,
+            scope being snapshot.store.scope_name, claim being claim, supports being operation equals "support",
+            source being (get_text with node being request, key being "source"), expected_revision being (get_number with node being request, key being "expected_revision")
+        variable receipt is bound_receipt with code being added.code, snapshot being snapshot
+        set receipt to put_number with node being receipt, key being "revision", input being added.revision
+        set receipt to put_number with node being receipt, key being "evidence_id", input being added.evidence_id
+        give put_number with node being receipt, key being "event_id", input being added.event_id
+    end when
+
+    value keys as array of text is ["op", "instance", "caller", "grant_id", "claim", "as_of", "max_work", "max_evidence"]
+    when not (exact_object with node being request, keys being keys) or not (number_ok with node being request, key being "as_of") or
+        not (number_ok with node being request, key being "max_work") or not (number_ok with node being request, key being "max_evidence") then
+        give base_receipt with code being "invalid"
+    end when
+    value observed is snapshot.store.resolve with authority being snapshot.authority, caller being caller, grant_id being grant_id,
+        scope being snapshot.store.scope_name, claim being claim, as_of being (get_number with node being request, key being "as_of"),
+        max_work being (get_number with node being request, key being "max_work"), max_evidence being (get_number with node being request, key being "max_evidence")
+    variable receipt is bound_receipt with code being observed.code, snapshot being snapshot
+    set receipt to put_text with node being receipt, key being "state", input being observed.state
+    set receipt to put_number with node being receipt, key being "revision", input being observed.revision
+    set receipt to put_boolean with node being receipt, key being "complete", input being observed.complete
+    set receipt to put_boolean with node being receipt, key being "evidence_complete", input being observed.evidence_complete
+    set receipt to put_number with node being receipt, key being "inspected", input being observed.inspected
+    set receipt to put_number with node being receipt, key being "supporting", input being observed.supporting
+    set receipt to put_number with node being receipt, key being "opposing", input being observed.opposing
+    variable ids is (new_array with nothing).unwrap with nothing
+    repeat for each evidence_id in observed.evidence_ids
+        value item is (integer_value with formatted "{evidence_id}").unwrap with nothing
+        set ids to (array_append with ids, item).unwrap with nothing
+    end repeat
+    give (object_set with receipt, "evidence_ids", ids).unwrap with nothing
+end paragraph
+
+public stage_request receives input as text returns text begin paragraph
+    when (the length of input) is greater than 1048576 then
+        give failed_packet with code being "invalid"
+    end when
+    value parsed is from_json with input
+    when parsed.is_error with nothing then
+        give failed_packet with code being "invalid"
+    end when
+    value envelope is parsed.unwrap with nothing
+    value keys as array of text is ["mode", "payload", "database_id", "incarnation", "scope", "request"]
+    when not (exact_object with node being envelope, keys being keys) or
+        not (text_ok with node being envelope, key being "mode", minimum being 1, maximum being 16) or
+        not (text_ok with node being envelope, key being "payload", minimum being 0, maximum being 524288) or
+        not (text_ok with node being envelope, key being "database_id", minimum being 1, maximum being 128) or
+        not (text_ok with node being envelope, key being "incarnation", minimum being 1, maximum being 128) or
+        not (text_ok with node being envelope, key being "scope", minimum being 0, maximum being 128) then
+        give failed_packet with code being "invalid"
+    end when
+    value mode is get_text with node being envelope, key being "mode"
+    value payload is get_text with node being envelope, key being "payload"
+    value database_id is get_text with node being envelope, key being "database_id"
+    value incarnation is get_text with node being envelope, key being "incarnation"
+    when mode equals "create" then
+        when payload does not equal "" or not (text_ok with node being envelope, key being "scope", minimum being 1, maximum being 128) then
+            give failed_packet with code being "invalid"
+        end when
+        value snapshot is new_state with database_id being database_id, incarnation being incarnation,
+            scope being (get_text with node being envelope, key being "scope")
+        value encoded is encode_state with snapshot being snapshot
+        when encoded.code does not equal "ok" then
+            give failed_packet with code being "invalid"
+        end when
+        give packet with code being "ok", payload being encoded.payload,
+            receipt being (bound_receipt with code being "created", snapshot being snapshot)
+    end when
+    when mode does not equal "recover" and mode does not equal "apply" then
+        give failed_packet with code being "invalid"
+    end when
+    value decoded is decode_state with payload being payload
+    when decoded.code does not equal "ok" then
+        give failed_packet with code being "corrupt"
+    end when
+    value snapshot is decoded.state
+    when database_id does not equal snapshot.database_id or snapshot.generation is at least 2147483646 then
+        give failed_packet with code being "invalid"
+    end when
+    when mode equals "recover" then
+        when incarnation equals snapshot.incarnation then
+            give failed_packet with code being "invalid"
+        end when
+        repeat for index from 0 to snapshot.authority.grant_count
+            set snapshot.authority.revoked at index to yes
+        end repeat
+        set snapshot.incarnation to incarnation
+        set snapshot.generation to snapshot.generation plus 1
+        value encoded is encode_state with snapshot being snapshot
+        when encoded.code does not equal "ok" then
+            give failed_packet with code being "corrupt"
+        end when
+        give packet with code being "ok", payload being encoded.payload,
+            receipt being (bound_receipt with code being "ready", snapshot being snapshot)
+    end when
+    when incarnation does not equal snapshot.incarnation then
+        give failed_packet with code being "invalid"
+    end when
+    value request is field_value with node being envelope, key being "request"
+    when (get_text with node being request, key being "instance") does not equal snapshot.incarnation then
+        give packet with code being "ok", payload being payload, receipt being (base_receipt with code being "denied")
+    end when
+    set snapshot.generation to snapshot.generation plus 1
+    value receipt is dispatch with snapshot being snapshot, request being request
+    value encoded is encode_state with snapshot being snapshot
+    when encoded.code does not equal "ok" then
+        give failed_packet with code being "corrupt"
+    end when
+    give packet with code being "ok", payload being encoded.payload, receipt being receipt
+end paragraph
+
+note if_test_mode
+test_envelope receives mode as text, payload as text, incarnation as text, request as `Value` returns text begin paragraph
+    variable envelope is empty_object with nothing
+    set envelope to put_text with node being envelope, key being "mode", input being mode
+    set envelope to put_text with node being envelope, key being "payload", input being payload
+    set envelope to put_text with node being envelope, key being "database_id", input being "test-database"
+    set envelope to put_text with node being envelope, key being "incarnation", input being incarnation
+    set envelope to put_text with node being envelope, key being "scope", input being "work"
+    set envelope to (object_set with envelope, "request", request).unwrap with nothing
+    give (to_json with envelope).unwrap with nothing
+end paragraph
+
+note if_test_mode
+test_snapshot returns durable_state begin paragraph
+    value snapshot is new_state with database_id being "test-database", incarnation being "before-recovery", scope being "work"
+    value issued is snapshot.authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 15, expires being 10, work_limit being 128, result_limit being 128, tick being 1
+    expect issued.code equals "ok"
+    give snapshot
+end paragraph
+
+note suite "enigma.storage.worker"
+recovery_retires_sessions_without_resetting_security_state begin test
+    value snapshot is test_snapshot with nothing
+    set snapshot.authority.clock_floor to 9
+    value encoded is encode_state with snapshot being snapshot
+    value input is test_envelope with mode being "recover", payload being encoded.payload, incarnation being "after-recovery",
+        request being (empty_object with nothing)
+    value reply is (from_json with (stage_request with input being input)).unwrap with nothing
+    expect (get_text with node being reply, key being "code") equals "ok"
+    value state is decode_state with payload being (get_text with node being reply, key being "payload")
+    expect state.code equals "ok"
+    expect state.state.generation equals 1
+    expect state.state.incarnation equals "after-recovery"
+    expect state.state.authority.clock_floor equals 9
+    expect state.state.authority.grant_count equals 1
+    expect (state.state.authority.revoked at 0)
+    expect (state.state.authority.holder_sessions at 0) equals 1
+    value receipt is field_value with node being reply, key being "receipt"
+    expect (get_text with node being receipt, key being "code") equals "ready"
+end test
+
+note suite "enigma.storage.worker"
+stale_instance_cannot_interpret_or_change_the_body begin test
+    value snapshot is test_snapshot with nothing
+    value encoded is encode_state with snapshot being snapshot
+    value request is put_text with node being (empty_object with nothing), key being "instance", input being "stale"
+    value input is test_envelope with mode being "apply", payload being encoded.payload, incarnation being "before-recovery", request being request
+    value reply is (from_json with (stage_request with input being input)).unwrap with nothing
+    expect (get_text with node being reply, key being "payload") equals encoded.payload
+    value receipt is field_value with node being reply, key being "receipt"
+    expect (get_text with node being receipt, key being "code") equals "denied"
+    expect (get_text with node being receipt, key being "instance") equals ""
+    expect (get_number with node being receipt, key being "generation") equals 0
+end test
+
+note suite "enigma.storage.worker"
+denied_expired_read_stages_a_durable_clock_advance begin test
+    value snapshot is test_snapshot with nothing
+    value encoded is encode_state with snapshot being snapshot
+    variable caller is empty_object with nothing
+    set caller to put_text with node being caller, key being "entity", input being "agent:a"
+    set caller to put_text with node being caller, key being "audience", input being "enigma"
+    set caller to put_number with node being caller, key being "session", input being 1
+    set caller to put_number with node being caller, key being "tick", input being 10
+    variable request is empty_object with nothing
+    set request to put_text with node being request, key being "op", input being "resolve"
+    set request to put_text with node being request, key being "instance", input being "before-recovery"
+    set request to put_number with node being request, key being "grant_id", input being 1
+    set request to (object_set with request, "caller", caller).unwrap with nothing
+    !!! The absent query body must not be validated before the expired grant.
+    value input is test_envelope with mode being "apply", payload being encoded.payload, incarnation being "before-recovery", request being request
+    value reply is (from_json with (stage_request with input being input)).unwrap with nothing
+    value receipt is field_value with node being reply, key being "receipt"
+    expect (get_text with node being receipt, key being "code") equals "denied"
+    expect (get_number with node being receipt, key being "generation") equals 0
+    value staged is decode_state with payload being (get_text with node being reply, key being "payload")
+    expect staged.code equals "ok"
+    expect staged.state.authority.clock_floor equals 10
+    expect staged.state.generation equals 1
+end test
+
+note suite "enigma.storage.worker"
+invalid_primary_is_never_replaced_with_empty_authority begin test
+    value input is test_envelope with mode being "recover", payload being "{}", incarnation being "after-recovery",
+        request being (empty_object with nothing)
+    value reply is (from_json with (stage_request with input being input)).unwrap with nothing
+    expect (get_text with node being reply, key being "code") equals "corrupt"
+    expect (get_text with node being reply, key being "payload") equals ""
+    value malformed is (from_json with (stage_request with input being "not json")).unwrap with nothing
+    expect (get_text with node being malformed, key being "code") equals "invalid"
+end test

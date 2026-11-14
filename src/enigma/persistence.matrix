@@ -1,0 +1,642 @@
+book enigma.persistence
+
+read everything from nil.std.nildata
+read everything from nil.std.core.result
+read everything from nil.std.core.option
+read everything from nil.std.core.convert
+read everything from nil.std.core
+read authority_registry, open_authority, access_context from enigma.authority
+read evidence_store, open_store, proposition from enigma.ledger
+
+public durable_state begin class
+    field database_id as text
+    field incarnation as text
+    field generation as number
+    field authority as authority_registry
+    field store as evidence_store
+end class
+
+public state_result begin record
+    field code as text
+    field state as durable_state
+end record
+
+public encoding_result begin record
+    field code as text
+    field payload as text
+end record
+
+public new_state receives database_id as text, incarnation as text, scope as text returns durable_state begin paragraph
+    give build durable_state with database_id being database_id, incarnation being incarnation, generation being 0,
+        authority being (open_authority with nothing), store being (open_store with scope being scope)
+end paragraph
+
+public exact_object receives node as `Value`, keys as array of text returns boolean begin paragraph
+    value shape is kind with node
+    when shape.is_error with nothing then
+        give no
+    end when
+    when (shape.unwrap with nothing) does not equal "object" then
+        give no
+    end when
+    value count is size with node
+    when count.is_error with nothing then
+        give no
+    end when
+    when (count.unwrap with nothing) does not equal (the length of keys) then
+        give no
+    end when
+    variable position as number is 0
+    repeat for each key in keys
+        repeat for previous from 0 to position
+            when key equals (keys at previous) then
+                give no
+            end when
+        end repeat
+        value present is object_has with node, key
+        when present.is_error with nothing then
+            give no
+        end when
+        when not (present.unwrap with nothing) then
+            give no
+        end when
+        set position to position plus 1
+    end repeat
+    give yes
+end paragraph
+
+public field_value receives node as `Value`, key as text returns `Value` begin paragraph
+    value result is object_get with node, key
+    when result.is_error with nothing then
+        give (null_value with nothing).unwrap with nothing
+    end when
+    value found is result.unwrap with nothing
+    when found.is_none with nothing then
+        give (null_value with nothing).unwrap with nothing
+    end when
+    give found.unwrap with nothing
+end paragraph
+
+public field_text receives node as `Value`, key as text returns Result of text, text begin paragraph
+    value child is field_value with node being node, key being key
+    give text_value with child
+end paragraph
+
+public field_number receives node as `Value`, key as text returns Result of number, text begin paragraph
+    value child is field_value with node being node, key being key
+    value shape is kind with child
+    when shape.is_error with nothing then
+        give as_i64 with ((null_value with nothing).unwrap with nothing)
+    end when
+    when (shape.unwrap with nothing) does not equal "integer" then
+        give as_i64 with ((null_value with nothing).unwrap with nothing)
+    end when
+    give as_i64 with child
+end paragraph
+
+public field_boolean receives node as `Value`, key as text returns Result of boolean, text begin paragraph
+    value child is field_value with node being node, key being key
+    give bool_value with child
+end paragraph
+
+state_reader begin class
+    field valid as boolean
+
+    public text_field receives node as `Value`, key as text returns text begin paragraph
+        value result is field_text with node being node, key being key
+        when result.is_error with nothing then
+            set my valid to no
+            give ""
+        end when
+        give result.unwrap with nothing
+    end paragraph
+
+    public number_field receives node as `Value`, key as text returns number begin paragraph
+        value result is field_number with node being node, key being key
+        when result.is_error with nothing then
+            set my valid to no
+            give 0
+        end when
+        give result.unwrap with nothing
+    end paragraph
+
+    public boolean_field receives node as `Value`, key as text returns boolean begin paragraph
+        value result is field_boolean with node being node, key being key
+        when result.is_error with nothing then
+            set my valid to no
+            give no
+        end when
+        give result.unwrap with nothing
+    end paragraph
+
+    public array_length receives node as `Value` returns number begin paragraph
+        value shape is kind with node
+        when shape.is_error with nothing then
+            set my valid to no
+            give 0
+        end when
+        when (shape.unwrap with nothing) does not equal "array" then
+            set my valid to no
+            give 0
+        end when
+        value result is size with node
+        when result.is_error with nothing then
+            set my valid to no
+            give 0
+        end when
+        give result.unwrap with nothing
+    end paragraph
+end class
+
+valid_label receives input as text returns boolean begin paragraph
+    give (the length of input) is greater than 0 and (the length of input) is at most 128
+end paragraph
+
+valid_content receives input as text returns boolean begin paragraph
+    give (the length of input) is greater than 0 and (the length of input) is at most 256
+end paragraph
+
+valid_state receives snapshot as durable_state returns boolean begin paragraph
+    when not (valid_label with input being snapshot.database_id) or not (valid_label with input being snapshot.incarnation) or
+        not (valid_label with input being snapshot.store.scope_name) or snapshot.generation is less than 0 or
+        snapshot.generation is greater than 2147483646 then
+        give no
+    end when
+    value authority is snapshot.authority
+    value store is snapshot.store
+    value count is authority.grant_count
+    when count is less than 0 or count is greater than 256 or authority.clock_floor is less than 0 then
+        give no
+    end when
+    when (the length of authority.holder_entities) does not equal count or (the length of authority.holder_sessions) does not equal count or
+        (the length of authority.scopes) does not equal count or (the length of authority.rights) does not equal count or
+        (the length of authority.expiries) does not equal count or (the length of authority.work_limits) does not equal count or
+        (the length of authority.result_limits) does not equal count or (the length of authority.parents) does not equal count or
+        (the length of authority.revoked) does not equal count then
+        give no
+    end when
+    repeat for index from 0 to count
+        value rights is authority.rights at index
+        value parent is authority.parents at index
+        when not (valid_label with input being authority.holder_entities at index) or
+            (authority.holder_sessions at index) is at most 0 or (authority.scopes at index) does not equal store.scope_name or
+            rights is less than 1 or rights is greater than 15 or (authority.expiries at index) is at most 0 or
+            (authority.work_limits at index) is less than 1 or (authority.work_limits at index) is greater than 65536 or
+            (authority.result_limits at index) is less than 1 or (authority.result_limits at index) is greater than 65536 or
+            parent is less than 0 or parent is greater than index then
+            give no
+        end when
+        when parent is greater than 0 then
+            value parent_index is parent minus 1
+            when ((authority.rights at parent_index) bitwise and 8) does not equal 8 or
+                (rights bitwise and (authority.rights at parent_index)) does not equal rights or
+                (authority.scopes at parent_index) does not equal (authority.scopes at index) or
+                (authority.expiries at index) is greater than (authority.expiries at parent_index) or
+                (authority.work_limits at index) is greater than (authority.work_limits at parent_index) or
+                (authority.result_limits at index) is greater than (authority.result_limits at parent_index) then
+                give no
+            end when
+        end when
+    end repeat
+    value revision is store.revision_value
+    when revision is less than 0 or revision is greater than 128 then
+        give no
+    end when
+    when (the length of store.event_kinds) does not equal revision or (the length of store.subjects) does not equal revision or
+        (the length of store.relations) does not equal revision or (the length of store.objects) does not equal revision or
+        (the length of store.polarities) does not equal revision or (the length of store.sources) does not equal revision or
+        (the length of store.entities) does not equal revision or (the length of store.sessions) does not equal revision or
+        (the length of store.targets) does not equal revision then
+        give no
+    end when
+    variable withdrawn as array of number is []
+    repeat for index from 0 to revision
+        value event_kind is store.event_kinds at index
+        when not (valid_label with input being store.entities at index) or (store.sessions at index) is at most 0 then
+            give no
+        end when
+        when event_kind equals 1 then
+            when not (valid_content with input being store.subjects at index) or not (valid_content with input being store.relations at index) or
+                not (valid_content with input being store.objects at index) or not (valid_content with input being store.sources at index) or
+                (store.targets at index) does not equal 0 or (store.polarities at index) is less than 0 or (store.polarities at index) is greater than 1 then
+                give no
+            end when
+        end when
+        when event_kind equals 2 then
+            value target is store.targets at index
+            when target is less than 1 or target is greater than index or (store.subjects at index) does not equal "" or
+                (store.relations at index) does not equal "" or (store.objects at index) does not equal "" or
+                (store.sources at index) does not equal "" or (store.polarities at index) does not equal 0 then
+                give no
+            end when
+            value target_index is target minus 1
+            when (store.event_kinds at target_index) does not equal 1 or
+                (store.entities at target_index) does not equal (store.entities at index) then
+                give no
+            end when
+            repeat for each previous in withdrawn
+                when previous equals target then
+                    give no
+                end when
+            end repeat
+            append target to withdrawn
+        end when
+        when event_kind does not equal 1 and event_kind does not equal 2 then
+            give no
+        end when
+    end repeat
+    give yes
+end paragraph
+
+corrupt_state returns state_result begin paragraph
+    give build state_result with code being "corrupt", state being (new_state with database_id being "", incarnation being "", scope being "")
+end paragraph
+
+public decode_state receives payload as text returns state_result begin paragraph
+    when (the length of payload) is greater than 524288 then
+        give corrupt_state with nothing
+    end when
+    value parsed is from_json with payload
+    when parsed.is_error with nothing then
+        give corrupt_state with nothing
+    end when
+    value root is parsed.unwrap with nothing
+    variable root_keys as array of text is ["schema", "database_id", "incarnation", "generation", "scope", "clock_floor", "grants", "events"]
+    when not (exact_object with node being root, keys being root_keys) then
+        give corrupt_state with nothing
+    end when
+    value reader is build state_reader with valid being yes
+    value schema is reader.text_field with node being root, key being "schema"
+    value database_id is reader.text_field with node being root, key being "database_id"
+    value incarnation is reader.text_field with node being root, key being "incarnation"
+    value scope is reader.text_field with node being root, key being "scope"
+    value generation is reader.number_field with node being root, key being "generation"
+    value floor is reader.number_field with node being root, key being "clock_floor"
+    when schema does not equal "enigma.state.v1" or not reader.valid then
+        give corrupt_state with nothing
+    end when
+    value snapshot is new_state with database_id being database_id, incarnation being incarnation, scope being scope
+    set snapshot.generation to generation
+    set snapshot.authority.clock_floor to floor
+    value grants is field_value with node being root, key being "grants"
+    value grant_count is reader.array_length with node being grants
+    value events is field_value with node being root, key being "events"
+    value event_count is reader.array_length with node being events
+    when not reader.valid or grant_count is greater than 256 or event_count is greater than 128 then
+        give corrupt_state with nothing
+    end when
+    variable grant_keys as array of text is ["entity", "session", "scope", "rights", "expires", "work_limit", "result_limit", "parent", "revoked"]
+    repeat for index from 0 to grant_count
+        value found is array_get with grants, index
+        when found.is_error with nothing then
+            give corrupt_state with nothing
+        end when
+        value optional is found.unwrap with nothing
+        when optional.is_none with nothing then
+            give corrupt_state with nothing
+        end when
+        value row is optional.unwrap with nothing
+        when not (exact_object with node being row, keys being grant_keys) then
+            give corrupt_state with nothing
+        end when
+        append (reader.text_field with node being row, key being "entity") to snapshot.authority.holder_entities
+        append (reader.number_field with node being row, key being "session") to snapshot.authority.holder_sessions
+        append (reader.text_field with node being row, key being "scope") to snapshot.authority.scopes
+        append (reader.number_field with node being row, key being "rights") to snapshot.authority.rights
+        append (reader.number_field with node being row, key being "expires") to snapshot.authority.expiries
+        append (reader.number_field with node being row, key being "work_limit") to snapshot.authority.work_limits
+        append (reader.number_field with node being row, key being "result_limit") to snapshot.authority.result_limits
+        append (reader.number_field with node being row, key being "parent") to snapshot.authority.parents
+        append (reader.boolean_field with node being row, key being "revoked") to snapshot.authority.revoked
+    end repeat
+    set snapshot.authority.grant_count to grant_count
+    variable event_keys as array of text is ["kind", "subject", "relation", "object_value", "polarity", "source", "entity", "session", "target"]
+    repeat for index from 0 to event_count
+        value found is array_get with events, index
+        when found.is_error with nothing then
+            give corrupt_state with nothing
+        end when
+        value optional is found.unwrap with nothing
+        when optional.is_none with nothing then
+            give corrupt_state with nothing
+        end when
+        value row is optional.unwrap with nothing
+        when not (exact_object with node being row, keys being event_keys) then
+            give corrupt_state with nothing
+        end when
+        append (reader.number_field with node being row, key being "kind") to snapshot.store.event_kinds
+        append (reader.text_field with node being row, key being "subject") to snapshot.store.subjects
+        append (reader.text_field with node being row, key being "relation") to snapshot.store.relations
+        append (reader.text_field with node being row, key being "object_value") to snapshot.store.objects
+        append (reader.number_field with node being row, key being "polarity") to snapshot.store.polarities
+        append (reader.text_field with node being row, key being "source") to snapshot.store.sources
+        append (reader.text_field with node being row, key being "entity") to snapshot.store.entities
+        append (reader.number_field with node being row, key being "session") to snapshot.store.sessions
+        append (reader.number_field with node being row, key being "target") to snapshot.store.targets
+    end repeat
+    set snapshot.store.revision_value to event_count
+    when not reader.valid or not (valid_state with snapshot being snapshot) then
+        give corrupt_state with nothing
+    end when
+    give build state_result with code being "ok", state being snapshot
+end paragraph
+
+state_writer begin class
+    field valid as boolean
+
+    public set_node receives node as `Value`, key as text, replacement as `Value` returns `Value` begin paragraph
+        value result is object_set with node, key, replacement
+        when result.is_error with nothing then
+            set my valid to no
+            give node
+        end when
+        give result.unwrap with nothing
+    end paragraph
+
+    public set_text receives node as `Value`, key as text, input as text returns `Value` begin paragraph
+        value result is string_value with input
+        when result.is_error with nothing then
+            set my valid to no
+            give node
+        end when
+        give my set_node with node being node, key being key, replacement being (result.unwrap with nothing)
+    end paragraph
+
+    public set_number receives node as `Value`, key as text, amount as number returns `Value` begin paragraph
+        value result is integer_value with (formatted "{amount}")
+        when result.is_error with nothing then
+            set my valid to no
+            give node
+        end when
+        give my set_node with node being node, key being key, replacement being (result.unwrap with nothing)
+    end paragraph
+
+    public set_boolean receives node as `Value`, key as text, flag as boolean returns `Value` begin paragraph
+        value result is boolean_value with flag
+        when result.is_error with nothing then
+            set my valid to no
+            give node
+        end when
+        give my set_node with node being node, key being key, replacement being (result.unwrap with nothing)
+    end paragraph
+
+    public append_node receives node as `Value`, item as `Value` returns `Value` begin paragraph
+        value result is array_append with node, item
+        when result.is_error with nothing then
+            set my valid to no
+            give node
+        end when
+        give result.unwrap with nothing
+    end paragraph
+end class
+
+public encode_state receives snapshot as durable_state returns encoding_result begin paragraph
+    when not (valid_state with snapshot being snapshot) then
+        give build encoding_result with code being "corrupt", payload being ""
+    end when
+    value writer is build state_writer with valid being yes
+    variable root is (new_object with nothing).unwrap with nothing
+    set root to writer.set_text with node being root, key being "schema", input being "enigma.state.v1"
+    set root to writer.set_text with node being root, key being "database_id", input being snapshot.database_id
+    set root to writer.set_text with node being root, key being "incarnation", input being snapshot.incarnation
+    set root to writer.set_number with node being root, key being "generation", amount being snapshot.generation
+    set root to writer.set_text with node being root, key being "scope", input being snapshot.store.scope_name
+    set root to writer.set_number with node being root, key being "clock_floor", amount being snapshot.authority.clock_floor
+    variable grants is (new_array with nothing).unwrap with nothing
+    repeat for index from 0 to snapshot.authority.grant_count
+        variable row is (new_object with nothing).unwrap with nothing
+        set row to writer.set_text with node being row, key being "entity", input being snapshot.authority.holder_entities at index
+        set row to writer.set_number with node being row, key being "session", amount being snapshot.authority.holder_sessions at index
+        set row to writer.set_text with node being row, key being "scope", input being snapshot.authority.scopes at index
+        set row to writer.set_number with node being row, key being "rights", amount being snapshot.authority.rights at index
+        set row to writer.set_number with node being row, key being "expires", amount being snapshot.authority.expiries at index
+        set row to writer.set_number with node being row, key being "work_limit", amount being snapshot.authority.work_limits at index
+        set row to writer.set_number with node being row, key being "result_limit", amount being snapshot.authority.result_limits at index
+        set row to writer.set_number with node being row, key being "parent", amount being snapshot.authority.parents at index
+        set row to writer.set_boolean with node being row, key being "revoked", flag being snapshot.authority.revoked at index
+        set grants to writer.append_node with node being grants, item being row
+    end repeat
+    set root to writer.set_node with node being root, key being "grants", replacement being grants
+    variable events is (new_array with nothing).unwrap with nothing
+    repeat for index from 0 to snapshot.store.revision_value
+        variable row is (new_object with nothing).unwrap with nothing
+        set row to writer.set_number with node being row, key being "kind", amount being snapshot.store.event_kinds at index
+        set row to writer.set_text with node being row, key being "subject", input being snapshot.store.subjects at index
+        set row to writer.set_text with node being row, key being "relation", input being snapshot.store.relations at index
+        set row to writer.set_text with node being row, key being "object_value", input being snapshot.store.objects at index
+        set row to writer.set_number with node being row, key being "polarity", amount being snapshot.store.polarities at index
+        set row to writer.set_text with node being row, key being "source", input being snapshot.store.sources at index
+        set row to writer.set_text with node being row, key being "entity", input being snapshot.store.entities at index
+        set row to writer.set_number with node being row, key being "session", amount being snapshot.store.sessions at index
+        set row to writer.set_number with node being row, key being "target", amount being snapshot.store.targets at index
+        set events to writer.append_node with node being events, item being row
+    end repeat
+    set root to writer.set_node with node being root, key being "events", replacement being events
+    when not writer.valid then
+        give build encoding_result with code being "corrupt", payload being ""
+    end when
+    value serialized is to_json with root
+    when serialized.is_error with nothing then
+        give build encoding_result with code being "corrupt", payload being ""
+    end when
+    value payload is serialized.unwrap with nothing
+    when (the length of payload) is greater than 524288 then
+        give build encoding_result with code being "state_too_large", payload being ""
+    end when
+    give build encoding_result with code being "ok", payload being payload
+end paragraph
+
+note if_test_mode
+fixture_state returns durable_state begin paragraph
+    value snapshot is new_state with database_id being "database:test", incarnation being "incarnation:test", scope being "codec-tests"
+    set snapshot.generation to 9
+    value root_grant is snapshot.authority.install with entity being "agent:writer", session being 1, scope being "codec-tests",
+        operations being 15, expires being 100, work_limit being 128, result_limit being 128, tick being 1
+    expect root_grant.code equals "ok"
+    value caller is build access_context with entity being "agent:writer", session being 1, audience being "enigma", tick being 2
+    value child is snapshot.authority.delegate with caller being caller, parent_id being root_grant.grant_id,
+        entity being "agent:reader", session being 2, operations being 1, expires being 80, work_limit being 64, result_limit being 64
+    expect child.code equals "ok"
+    value claim is build proposition with subject being "subject:α", relation being "reports",
+        object_value being quote plus "ready" plus quote plus newline plus "line\tail"
+    value added is snapshot.store.assert_claim with authority being snapshot.authority, caller being caller, grant_id being 1,
+        scope being "codec-tests", claim being claim, supports being yes, source being "fixture:" plus quote plus newline plus "β", expected_revision being 0
+    expect added.code equals "ok"
+    value opposing is snapshot.store.assert_claim with authority being snapshot.authority, caller being caller, grant_id being 1,
+        scope being "codec-tests", claim being claim, supports being no, source being "fixture:opposition", expected_revision being 1
+    expect opposing.code equals "ok"
+    value removed is snapshot.store.withdraw with authority being snapshot.authority, caller being caller, grant_id being 1,
+        scope being "codec-tests", evidence_id being opposing.evidence_id, expected_revision being 2
+    expect removed.code equals "ok"
+    value later is build access_context with entity being "agent:writer", session being 1, audience being "enigma", tick being 3
+    value revoked is snapshot.authority.revoke with caller being later, grant_id being 1
+    expect revoked.code equals "ok"
+    give snapshot
+end paragraph
+
+note if_test_mode
+fixture_payload returns text begin paragraph
+    value snapshot is fixture_state with nothing
+    give (encode_state with snapshot being snapshot).payload
+end paragraph
+
+note if_test_mode
+mutate_row receives payload as text, collection as text, index as number, key as text, replacement as `Value` returns text begin paragraph
+    value root is (from_json with payload).unwrap with nothing
+    value rows is field_value with node being root, key being collection
+    value row is ((array_get with rows, index).unwrap with nothing).unwrap with nothing
+    value changed_row is (object_set with row, key, replacement).unwrap with nothing
+    value changed_rows is (array_set with rows, index, changed_row).unwrap with nothing
+    value changed_root is (object_set with root, collection, changed_rows).unwrap with nothing
+    give (to_json with changed_root).unwrap with nothing
+end paragraph
+
+note suite "enigma.storage.codec"
+roundtrip_preserves_history_authority_and_escaped_text begin test
+    value payload is fixture_payload with nothing
+    value decoded is decode_state with payload being payload
+    expect decoded.code equals "ok"
+    expect decoded.state.database_id equals "database:test"
+    expect decoded.state.incarnation equals "incarnation:test"
+    expect decoded.state.generation equals 9
+    expect decoded.state.store.revision_value equals 3
+    expect (decoded.state.store.subjects at 0) equals "subject:α"
+    expect (decoded.state.store.objects at 0) equals quote plus "ready" plus quote plus newline plus "line\tail"
+    expect (decoded.state.store.sources at 0) equals "fixture:" plus quote plus newline plus "β"
+    expect (decoded.state.store.targets at 2) equals 2
+    expect decoded.state.authority.grant_count equals 2
+    expect decoded.state.authority.clock_floor equals 3
+    expect decoded.state.authority.revoked at 0
+    expect not (decoded.state.authority.revoked at 1)
+    expect (decoded.state.authority.parents at 1) equals 1
+    value reserialized is (encode_state with snapshot being decoded.state).payload
+    expect reserialized equals payload
+end test
+
+note suite "enigma.storage.codec"
+decoded_snapshots_do_not_alias_each_other_or_live_state begin test
+    value original is fixture_state with nothing
+    value payload is (encode_state with snapshot being original).payload
+    value first is decode_state with payload being payload
+    value second is decode_state with payload being payload
+    set first.state.store.sources at 0 to "changed"
+    set first.state.authority.revoked at 0 to no
+    expect (second.state.store.sources at 0) equals "fixture:" plus quote plus newline plus "β"
+    expect second.state.authority.revoked at 0
+    expect original.authority.revoked at 0
+    expect (original.store.sources at 0) equals "fixture:" plus quote plus newline plus "β"
+end test
+
+note suite "enigma.storage.codec"
+schema_keys_types_and_integer_precision_are_strict begin test
+    expect (decode_state with payload being "{}").code equals "corrupt"
+    expect (decode_state with payload being "[]").code equals "corrupt"
+    expect (decode_state with payload being "not json").code equals "corrupt"
+    value root is (from_json with (fixture_payload with nothing)).unwrap with nothing
+    value extra is (object_set with root, "unexpected", (null_value with nothing).unwrap with nothing).unwrap with nothing
+    expect (decode_state with payload being (to_json with extra).unwrap with nothing).code equals "corrupt"
+    value missing is (object_remove with root, "clock_floor").unwrap with nothing
+    expect (decode_state with payload being (to_json with missing).unwrap with nothing).code equals "corrupt"
+    value fractional is (object_set with root, "generation", (decimal_value with "1.0").unwrap with nothing).unwrap with nothing
+    expect (decode_state with payload being (to_json with fractional).unwrap with nothing).code equals "corrupt"
+    value overflow is (object_set with root, "clock_floor", (integer_value with "9223372036854775808").unwrap with nothing).unwrap with nothing
+    expect (decode_state with payload being (to_json with overflow).unwrap with nothing).code equals "corrupt"
+    value nul is (from_json with (quote plus "bad\u0000text" plus quote)).unwrap with nothing
+    value nul_root is (object_set with root, "database_id", nul).unwrap with nothing
+    expect (decode_state with payload being (to_json with nul_root).unwrap with nothing).code equals "corrupt"
+end test
+
+note suite "enigma.storage.codec"
+grant_parent_cycles_missing_members_and_expansion_are_corrupt begin test
+    value payload is fixture_payload with nothing
+    value two is (integer_value with "2").unwrap with nothing
+    value cycle is mutate_row with payload being payload, collection being "grants", index being 1, key being "parent", replacement being two
+    expect (decode_state with payload being cycle).code equals "corrupt"
+    value one is (integer_value with "1").unwrap with nothing
+    value nondelegating is mutate_row with payload being payload, collection being "grants", index being 0, key being "rights", replacement being one
+    expect (decode_state with payload being nondelegating).code equals "corrupt"
+    value nine is (integer_value with "9").unwrap with nothing
+    value limited_root is mutate_row with payload being payload, collection being "grants", index being 0, key being "rights", replacement being nine
+    value expanded is mutate_row with payload being limited_root, collection being "grants", index being 1, key being "rights", replacement being two
+    expect (decode_state with payload being expanded).code equals "corrupt"
+    value other_scope is mutate_row with payload being payload, collection being "grants", index being 1, key being "scope",
+        replacement being (string_value with "another-scope").unwrap with nothing
+    expect (decode_state with payload being other_scope).code equals "corrupt"
+    value root is (from_json with payload).unwrap with nothing
+    value rows is field_value with node being root, key being "grants"
+    value row is ((array_get with rows, 0).unwrap with nothing).unwrap with nothing
+    value missing is (object_remove with row, "revoked").unwrap with nothing
+    value bad_rows is (array_set with rows, 0, missing).unwrap with nothing
+    value bad_root is (object_set with root, "grants", bad_rows).unwrap with nothing
+    expect (decode_state with payload being (to_json with bad_root).unwrap with nothing).code equals "corrupt"
+end test
+
+note suite "enigma.storage.codec"
+withdrawals_require_prior_assertion_same_owner_and_no_duplicates begin test
+    value payload is fixture_payload with nothing
+    value future is mutate_row with payload being payload, collection being "events", index being 2, key being "target",
+        replacement being (integer_value with "3").unwrap with nothing
+    expect (decode_state with payload being future).code equals "corrupt"
+    value other_owner is mutate_row with payload being payload, collection being "events", index being 2, key being "entity",
+        replacement being (string_value with "agent:other").unwrap with nothing
+    expect (decode_state with payload being other_owner).code equals "corrupt"
+    value nonblank is mutate_row with payload being payload, collection being "events", index being 2, key being "source",
+        replacement being (string_value with "smuggled").unwrap with nothing
+    expect (decode_state with payload being nonblank).code equals "corrupt"
+    value root is (from_json with payload).unwrap with nothing
+    value events is field_value with node being root, key being "events"
+    value withdrawal is ((array_get with events, 2).unwrap with nothing).unwrap with nothing
+    value duplicate is (array_append with events, withdrawal).unwrap with nothing
+    value changed is (object_set with root, "events", duplicate).unwrap with nothing
+    expect (decode_state with payload being (to_json with changed).unwrap with nothing).code equals "corrupt"
+end test
+
+note suite "enigma.storage.codec"
+encoder_validates_host_array_shapes_and_semantic_state begin test
+    value snapshot is fixture_state with nothing
+    append "extra" to snapshot.store.sources
+    expect (encode_state with snapshot being snapshot).code does not equal "ok"
+    value another is fixture_state with nothing
+    set another.authority.parents at 0 to 1
+    expect (encode_state with snapshot being another).code does not equal "ok"
+    value negative_state is new_state with database_id being "db", incarnation being "boot", scope being "scope"
+    set negative_state.generation to minus 1
+    expect (encode_state with snapshot being negative_state).code does not equal "ok"
+end test
+
+note suite "enigma.storage.codec"
+empty_state_and_retained_expired_grants_remain_valid begin test
+    value blank is new_state with database_id being "db", incarnation being "boot", scope being "scope"
+    value encoded is encode_state with snapshot being blank
+    expect encoded.code equals "ok"
+    value decoded is decode_state with payload being encoded.payload
+    expect decoded.code equals "ok"
+    expect decoded.state.store.revision_value equals 0
+    expect decoded.state.authority.grant_count equals 0
+    value expired is fixture_state with nothing
+    set expired.authority.clock_floor to 500
+    value persisted is encode_state with snapshot being expired
+    expect persisted.code equals "ok"
+    value recovered is decode_state with payload being persisted.payload
+    expect recovered.code equals "ok"
+    expect recovered.state.authority.clock_floor equals 500
+end test
+
+note suite "enigma.storage.codec"
+oversized_and_corrupt_inputs_expose_no_partial_authority begin test
+    variable oversized as text is "x"
+    repeat for index from 0 to 20
+        set oversized to oversized plus oversized
+    end repeat
+    value rejected is decode_state with payload being oversized
+    expect rejected.code equals "corrupt"
+    expect rejected.state.authority.grant_count equals 0
+    expect rejected.state.store.revision_value equals 0
+    value payload is fixture_payload with nothing
+    value malformed is mutate_row with payload being payload, collection being "grants", index being 1, key being "parent",
+        replacement being (integer_value with "2").unwrap with nothing
+    value corrupted is decode_state with payload being malformed
+    expect corrupted.code equals "corrupt"
+    expect corrupted.state.authority.grant_count equals 0
+    expect corrupted.state.store.revision_value equals 0
+end test

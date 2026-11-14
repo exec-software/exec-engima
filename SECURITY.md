@@ -2,7 +2,8 @@
 
 ## Current implementation
 
-Enigma has a bounded, in-memory evidence engine and an embedded Matrix client.
+Enigma has a bounded evidence engine, an embedded Matrix client, and a separate
+POSIX persistence host.
 The engine checks scoped grants before examining evidence requests, binds them
 to an exact entity/session and the audience `enigma`, and checks operation
 rights, logical expiry, limits, and live delegation ancestry. Delegation cannot
@@ -17,10 +18,52 @@ can access or change store and registry memory. The host must own these handles
 and keep hostile code outside the process. This slice does not establish an
 unforgeable capability or a hostile-process isolation boundary.
 
-There is no authentication service, network listener, encryption, persistence,
-durable revocation, or recovery guarantee. Process exit discards evidence and
-authority state. No version is qualified to hold sensitive or production data.
-See [ENI-0001](docs/design/ENI-0001-evidence-and-authority.md) for the exact contract.
+There is no authentication service, network listener, encryption, or native
+Anomalous integration. The direct embedded client remains volatile. The durable
+host retains evidence and permission state under the commit and recovery
+contract below. No version is qualified to hold sensitive or production data.
+See [ENI-0001](docs/design/ENI-0001-evidence-and-authority.md) for evidence policy
+and [ENI-0002](docs/design/ENI-0002-durable-state-and-recovery.md) for persistence.
+
+## Durable acknowledgements and recovery
+
+Only `scripts/store.py` publishes durable receipts. The Matrix worker stages a
+candidate; its reply alone is not a durable acknowledgement. The POSIX host
+holds an exclusive nonblocking advisory writer lock, writes a private candidate,
+syncs the file, atomically replaces the canonical checkpoint, and syncs the
+database directory before returning the receipt. Initial creation also syncs
+the parent directory. An I/O or worker-protocol failure stops the session without
+a success receipt; no later request uses its uncertain in-memory state.
+
+The single checkpoint retains evidence, permission definitions, delegation
+ancestry, revocation flags, nonreused ID counters, and the logical clock floor.
+Reads and denied operations are also committed when their staged state changes,
+so authorization cannot advance the floor only in memory. Matrix validates the
+whole checkpoint before exposing evidence or authority.
+
+Opening a store retires **all** loaded session grants, retains their rows and
+prior revocations, installs a fresh random incarnation, and commits that recovery
+transition before `ready`. The trusted host must re-admit callers and explicitly
+install new grants. Old-incarnation requests are denied before their bodies are
+interpreted; old grant rows are never recycled. Persistent permission definitions
+do not authenticate a session after restart.
+
+Missing, malformed, truncated, checksum-invalid, or semantically invalid primary
+state fails closed. Opening never auto-initializes a database, and recovery never
+uses a backup or orphaned staging file to bypass corrupt canonical state. An
+older valid checkpoint may predate an acknowledged revocation. See [the
+persistence guide](docs/persistence.md) for the request and failure contract.
+
+Guarantees assume a trusted owner and storage ancestry plus a local POSIX
+filesystem honoring `fsync`, atomic rename, and advisory locks. Directory and
+file handles reject unsafe final components; this does not contain a hostile
+owner replacing trusted ancestry. SHA-256 detects accidental corruption, not
+forgery or restoration of an older coherent snapshot. Retirement plus a fresh
+incarnation prevents saved session authority from returning through this recovery
+path; general rollback detection needs separately trusted monotonic state.
+Physical power-cut behavior and arbitrary filesystem/device behavior have not
+been qualified. An unacknowledged effect can be present after restart, so callers
+must inspect state rather than blindly retrying.
 
 ## Identity and time
 
@@ -40,16 +83,16 @@ connection time, so the host must reconnect with fresh context for subsequent
 dispatches. Holding a client with an old tick does not establish freshness.
 
 A future native adapter must derive context from actual live admission and
-installed authority rather than request fields. Body/effect binding, replay
-control, session and issuer incarnations, durable security accounting, and a
-restart epoch or recovery contract remain required work before external access.
+installed authority rather than request fields. Body/effect binding, durable
+replay/idempotency accounting, externally verified session incarnations, and
+trusted clock integration remain required before external access.
 
-Numeric grant IDs belong to one live registry, and evidence IDs and revisions
-belong to one live store. A replacement or restarted instance can reuse those
-numbers. There is no issuer/store epoch or retained replay state to detect stale
-ID reuse. The host must discard old clients and establish new instance bindings;
-standalone numeric IDs or saved contexts cannot safely carry authority across
-replacement or restart.
+The durable host preserves grant IDs and counters and binds requests to the
+current incarnation. Direct embedded replacement remains a different path:
+opening a new in-memory registry or store can reuse numbers. Discard old clients
+and establish new bindings; standalone numeric IDs or saved contexts are never
+portable authority. Do not bypass durable recovery with fresh in-memory objects
+and then claim that old authority has been recovered safely.
 
 ## Evidence and resource boundaries
 
@@ -64,21 +107,25 @@ replacement or restart.
   reported separately. Neither evidence state nor a source label proves truth.
 - Each store holds at most 128 events. Proposition components and source text
   are bounded at 256 units under NIL's text-length operation; scope and entity
-  labels are bounded at 128. The authority registry admits at most 256 grants.
+  labels are bounded at 128. The authority registry retains at most 256 grants,
+  including revoked and retired rows. Recovery and re-admission can exhaust this
+  capacity; there is no compaction or identifier recycling.
 - Resolve meters inspected log events. Withdrawal and inspection return
   `limit` when their required scan exceeds the grant's work limit. Event budgets
   are not CPU-time quotas: bounded withdrawal checks add work within a scan.
 - These checks do not establish resistance to timing side channels, denial of
-  service, host compromise, allocation failure, or process crashes. Direct host
-  memory access can bypass the API contract.
+  service, host compromise, or allocation failure. Process recovery is bounded
+  by the checkpoint contract above. Direct host memory access can bypass the
+  API contract.
 
 ## Remaining security work
 
-Durable revocation and replay state, native admission integration, protected
+Native admission integration, durable replay/idempotency state, protected
 transport, maintained cryptographic dependencies, key rotation and recovery,
-redacted audit integrity and retention, and backup/restore verification remain
-planned. Historical evidence is not a tamper-proof audit log. Revocation cannot
-undo completed effects or recover data already returned.
+externally anchored rollback protection, redacted audit integrity and retention,
+and backup/restore verification remain planned. Historical evidence is not a
+tamper-proof audit log. Revocation cannot undo completed effects or recover data
+already returned.
 
 Do not invent cryptographic algorithms or infer safety from a model's stated
 purpose. Human and agent requests must follow the same authority path.

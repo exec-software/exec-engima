@@ -66,5 +66,7 @@ Neither textual requests nor the client can authorize themselves. Current
 grants apply to historical views too. The host supplies fresh logical-tick
 context per dispatch; client snapshots do not establish realtime freshness.
 Current public Matrix class fields are not isolation from hostile same-process
-code. Authentication, native admission, durable revocation, persistent storage,
-network transport, inference, and causal dependencies remain separate work.
+code. The [durable host](../persistence.md) commits persistence and revocation
+state through this same operation model; direct client calls remain volatile.
+Authentication, native admission, network transport, inference, and causal
+dependencies remain separate work.

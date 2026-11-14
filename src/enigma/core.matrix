@@ -9,7 +9,7 @@ public banner returns text begin paragraph
 end paragraph
 
 public status returns text begin paragraph
-    give "In-memory evidence engine. No persistence or native isolation."
+    give "Embedded API is volatile. Durable host: scripts/store.py. No native isolation."
 end paragraph
 
 public help_text returns text begin paragraph

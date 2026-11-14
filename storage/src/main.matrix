@@ -1,0 +1,10 @@
+book enigma.storage_worker
+
+read read_line from nil.std.io
+read stage_request from enigma.storage
+
+main returns override integer begin paragraph
+    value request is read_line with nothing
+    say stage_request with input being request
+    give 0
+end paragraph

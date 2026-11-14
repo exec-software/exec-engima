@@ -2,6 +2,9 @@
 
 Status: implementation contract for the first in-memory slice.
 
+This remains the direct embedded API contract. The separate durable host and
+its stronger restart rules are defined in [ENI-0002](ENI-0002-durable-state-and-recovery.md).
+
 ## Why this model
 
 An agent often needs to retain competing reports, explain an answer, and revisit
@@ -77,6 +80,8 @@ code. Matrix class fields currently remain publicly accessible; the host owns
 the store and registry and must not expose their memory to hostile code. These
 classes are not unforgeable kernel capabilities. There is no authentication,
 transport, crypto, persistence, durable revocation, or hostile-process isolation.
+Persistence and durable revocation are supplied by the separate ENI-0002 host,
+not by direct calls on these in-memory handles.
 Revocation is checked on each synchronous call, with no prepare/commit window.
 Direct host memory access is outside this API policy boundary.
 

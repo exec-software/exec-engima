@@ -8,6 +8,8 @@
 *.so
 *.dylib
 *.exe
+__pycache__/
+*.pyc
 
 # Local data, credentials and diagnostics
 /data/
@@ -23,6 +25,9 @@
 *.sqlite
 *.sqlite3
 *.wal
+checkpoint.json
+.checkpoint-*
+.lock
 
 # Editor and OS files
 .idea/

@@ -13,8 +13,8 @@ resolution state, completeness, and evidence IDs. Supporting and opposing
 evidence coexist; neither silently overwrites the other.
 
 Use `describe_surface with nothing` to discover protocol `enigma.evidence.v1`,
-the operation list, current hard limits, and the absence of persistence. This
-describes the protocol, not the permissions held by a particular grant. Text
+the operation list, current hard limits, and this embedded client's lack of
+persistence. This describes the protocol, not the permissions held by a particular grant. Text
 limits use the engine's Matrix text-length operation. Each call returns a fresh
 description, including a fresh operation array.
 
@@ -50,8 +50,24 @@ tick in a short synthetic fixture.
 This is an API for trusted embedding code, not isolation against hostile code
 in the process. Matrix class fields are currently public. The host is responsible
 for authenticated identity, a trustworthy clock, grant provisioning, and protecting
-handles. There is no network authentication, encryption, or persistent storage.
+handles. This direct client supplies no network authentication, encryption, or
+persistent commits.
 See the root [security policy](../../SECURITY.md).
+
+## Relationship to durable storage
+
+This direct client remains volatile: `supports_persistence` is deliberately
+`false`, and its method returns are not durable acknowledgements. The separate
+[POSIX storage host](../../docs/persistence.md) invokes the Matrix operation
+worker and publishes receipts only after checkpoint synchronization. It retains
+permission and revocation state along with evidence.
+
+On opening a durable store, recovery retires all prior session grants and commits
+a fresh incarnation before `ready`. Old contexts and numeric grant IDs do not
+re-admit a caller; the trusted host must establish a current session and install
+new authority explicitly. The embedded client does not automatically attach to,
+recover, or commit a durable store. A transport-aware durable client can be added
+as a separate package surface later.
 
 ## Run the example and tests
 

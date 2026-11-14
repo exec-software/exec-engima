@@ -18,8 +18,9 @@ Run:
 ./scripts/test.sh
 ```
 
-This checks analyzer warnings, Matrix tests, builds, and the CLI contract on VM
-and native routes with strict runtime bounds checking. If a target cannot run
+This checks analyzer warnings, Matrix tests, builds, the CLI contract on VM
+and native routes with strict runtime bounds checking, and POSIX host fault and
+recovery tests. If a target cannot run
 on your host, identify the SDK and exact target you checked; do not claim both.
 Add behavior tests for meaningful changes to parsing, policy, storage, recovery,
 and interfaces. No performance or security guarantee should be asserted without
