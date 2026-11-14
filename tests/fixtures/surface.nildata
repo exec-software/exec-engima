@@ -1,0 +1,18 @@
+nildata 1
+object
+  protocol is "enigma.evidence.v1"
+  model is "evidence"
+  operations is an array
+    item is "support"
+    item is "oppose"
+    item is "resolve"
+    item is "inspect"
+    item is "withdraw"
+  end array
+  max_events is 128
+  max_text_units is 256
+  max_scope_units is 128
+  latest_revision_sentinel is -1
+  supports_persistence is false
+  requires_trusted_host is true
+end object

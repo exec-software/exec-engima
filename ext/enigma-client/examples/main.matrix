@@ -1,0 +1,40 @@
+book enigma.client_example
+
+read access_context, open_authority from enigma.authority
+read proposition, open_store from enigma.ledger
+read connect, describe_surface from enigma.client
+
+main returns override integer begin paragraph
+    !!! Trusted host fixture setup. These constants do not authenticate anyone.
+    value authority is open_authority with nothing
+    value granted is authority.install with entity being "demo-agent", session being 1, scope being "demo", operations being 7, expires being 1000, work_limit being 128, result_limit being 128, tick being 1
+    expect granted.code equals "ok"
+    value host_context is build access_context with entity being "demo-agent", session being 1, audience being "enigma", tick being 1
+    value ledger is open_store with scope being "demo"
+    value adapter is connect with host_store being ledger, host_authority being authority, host_context being host_context, grant_id being granted.grant_id, scope being "demo"
+
+    value surface is describe_surface with nothing
+    say surface.protocol
+    value claim is build proposition with subject being "sample:release", relation being "ready-for", object_value being "review"
+    value first_write is adapter.support with claim being claim, source being "fixture:passing-checks", expected_revision being 0
+    expect first_write.code equals "ok"
+    value second_write is adapter.oppose with claim being claim, source being "fixture:missing-signoff", expected_revision being first_write.revision
+    expect second_write.code equals "ok"
+
+    value disagreement is adapter.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect disagreement.code equals "ok"
+    say "With both sources: " plus disagreement.state
+
+    value withdrawal is adapter.withdraw with evidence_id being second_write.evidence_id, expected_revision being second_write.revision
+    expect withdrawal.code equals "ok"
+    value current_answer is adapter.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    value historical_answer is adapter.resolve with claim being claim, as_of being second_write.revision, max_work being 128, max_evidence being 128
+    say "After withdrawal: " plus current_answer.state
+    say "At the earlier revision: " plus historical_answer.state
+
+    value bounded_answer is adapter.resolve with claim being claim, as_of being minus 1, max_work being 1, max_evidence being 1
+    say "Bounded query complete:"
+    say bounded_answer.complete
+    say "All evidence and grants in this example disappear at process exit."
+    give 0
+end paragraph

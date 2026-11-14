@@ -45,6 +45,8 @@ From the Enigma project directory:
 ./scripts/nil.sh check
 ./scripts/nil.sh build --target all
 ./scripts/nil.sh run --target native -- --version
+./scripts/nil.sh run -- --demo
+./scripts/nil.sh run -- --surface
 ./scripts/test.sh
 ```
 
@@ -53,8 +55,9 @@ sets `NIL_STRICT_BOUNDS=1`, including for tests. This is required because unchec
 array access would undermine storage correctness as the engine develops. The
 environment setting is a runtime check, not a database security boundary.
 
-`scripts/test.sh` checks the project, runs colocated Matrix tests, builds the
-requested execution targets, and checks the CLI contract against `VERSION`.
+`scripts/test.sh` checks both projects, runs colocated Matrix tests through the
+main import graph, builds the requested execution targets for the engine and
+companion example, and checks the CLI, surface, demo, and package contracts.
 Its default is both VM and native; `--target vm` or `--target native` selects one.
 
 Build products stay in the ignored `build/` directory. Keep local databases,

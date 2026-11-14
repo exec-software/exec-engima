@@ -1,0 +1,561 @@
+book enigma.ledger
+
+read authority_registry, access_context, open_authority from enigma.authority
+
+public proposition begin record
+    field subject as text
+    field relation as text
+    field object_value as text
+end record
+
+public evidence_item begin record
+    field id as number
+    field subject as text
+    field relation as text
+    field object_value as text
+    field supports as boolean
+    field source as text
+    field entity as text
+    field session as number
+    field asserted_at as number
+    field withdrawn_at as number
+end record
+
+public write_receipt begin record
+    field code as text
+    field revision as number
+    field evidence_id as number
+    field event_id as number
+end record
+
+public resolution begin record
+    field code as text
+    field state as text
+    field revision as number
+    field complete as boolean
+    field evidence_complete as boolean
+    field inspected as number
+    field supporting as number
+    field opposing as number
+    field evidence_ids as array of number
+end record
+
+public inspect_receipt begin record
+    field code as text
+    field revision as number
+    field evidence as evidence_item
+end record
+
+valid_text receives input as text returns boolean begin paragraph
+    give (the length of input) is greater than 0 and (the length of input) is at most 256
+end paragraph
+
+valid_proposition receives claim as proposition returns boolean begin paragraph
+    give (valid_text with input being claim.subject) and
+        (valid_text with input being claim.relation) and
+        (valid_text with input being claim.object_value)
+end paragraph
+
+empty_proposition returns proposition begin paragraph
+    give build proposition with subject being "", relation being "", object_value being ""
+end paragraph
+
+failed_write receives code as text returns write_receipt begin paragraph
+    give build write_receipt with code being code, revision being 0, evidence_id being 0, event_id being 0
+end paragraph
+
+failed_resolution receives code as text returns resolution begin paragraph
+    give build resolution with code being code, state being "unavailable", revision being 0,
+        complete being no, evidence_complete being no, inspected being 0,
+        supporting being 0, opposing being 0, evidence_ids being []
+end paragraph
+
+failed_inspect receives code as text returns inspect_receipt begin paragraph
+    value blank is build evidence_item with id being 0, subject being "", relation being "",
+        object_value being "", supports being no, source being "", entity being "",
+        session being 0, asserted_at being 0, withdrawn_at being 0
+    give build inspect_receipt with code being code, revision being 0, evidence being blank
+end paragraph
+
+!!! Trusted host state: Matrix fields are publicly accessible. Only API mediation
+!!! is tested here; hostile same-process memory access requires native isolation.
+public evidence_store begin class
+    field scope_name as text
+    field revision_value as number
+    field event_kinds as array of number
+    field subjects as array of text
+    field relations as array of text
+    field objects as array of text
+    field polarities as array of number
+    field sources as array of text
+    field entities as array of text
+    field sessions as array of number
+    field targets as array of number
+
+    append_event receives claim as proposition, polarity as number, source as text,
+        entity as text, session as number, kind as number, target as number returns number begin paragraph
+        append kind to my event_kinds
+        append claim.subject to my subjects
+        append claim.relation to my relations
+        append claim.object_value to my objects
+        append polarity to my polarities
+        append source to my sources
+        append entity to my entities
+        append session to my sessions
+        append target to my targets
+        set my revision_value to my revision_value plus 1
+        give my revision_value
+    end paragraph
+
+    public assert_claim receives authority as authority_registry, caller as access_context,
+        grant_id as number, scope as text, claim as proposition, supports as boolean,
+        source as text, expected_revision as number returns write_receipt begin paragraph
+        value access is authority.authorize with caller being caller, grant_id being grant_id,
+            scope being scope, operation being 2
+        when access.code does not equal "ok" then
+            give failed_write with code being "denied"
+        end when
+        when scope does not equal my scope_name then
+            give failed_write with code being "denied"
+        end when
+        when not (valid_proposition with claim being claim) or not (valid_text with input being source) or
+            expected_revision is less than minus 1 then
+            give failed_write with code being "invalid"
+        end when
+        when expected_revision does not equal minus 1 and expected_revision does not equal my revision_value then
+            give failed_write with code being "conflict"
+        end when
+        when my revision_value is at least 128 then
+            give failed_write with code being "capacity"
+        end when
+        variable polarity as number is 0
+        when supports then
+            set polarity to 1
+        end when
+        value next_id is my append_event with claim being claim, polarity being polarity, source being source,
+            entity being access.entity, session being caller.session, kind being 1, target being 0
+        give build write_receipt with code being "ok", revision being next_id, evidence_id being next_id, event_id being next_id
+    end paragraph
+
+    public withdraw receives authority as authority_registry, caller as access_context,
+        grant_id as number, scope as text, evidence_id as number, expected_revision as number returns write_receipt begin paragraph
+        value access is authority.authorize with caller being caller, grant_id being grant_id,
+            scope being scope, operation being 4
+        when access.code does not equal "ok" or scope does not equal my scope_name then
+            give failed_write with code being "denied"
+        end when
+        when expected_revision is less than minus 1 or evidence_id is less than 1 then
+            give failed_write with code being "invalid"
+        end when
+        when expected_revision does not equal minus 1 and expected_revision does not equal my revision_value then
+            give failed_write with code being "conflict"
+        end when
+        when my revision_value is greater than access.work_limit then
+            give failed_write with code being "limit"
+        end when
+        when evidence_id is greater than my revision_value then
+            give failed_write with code being "denied"
+        end when
+        value position is evidence_id minus 1
+        when (my event_kinds at position) does not equal 1 or (my entities at position) does not equal access.entity then
+            give failed_write with code being "denied"
+        end when
+        variable index as number is evidence_id
+        repeat while index is less than my revision_value
+            when (my event_kinds at index) equals 2 and (my targets at index) equals evidence_id then
+                give failed_write with code being "denied"
+            end when
+            set index to index plus 1
+        end repeat
+        when my revision_value is at least 128 then
+            give failed_write with code being "capacity"
+        end when
+        value blank is empty_proposition with nothing
+        value next_id is my append_event with claim being blank, polarity being 0, source being "",
+            entity being access.entity, session being caller.session, kind being 2, target being evidence_id
+        give build write_receipt with code being "ok", revision being next_id, evidence_id being evidence_id, event_id being next_id
+    end paragraph
+
+    public resolve receives authority as authority_registry, caller as access_context,
+        grant_id as number, scope as text, claim as proposition, as_of as number,
+        max_work as number, max_evidence as number returns resolution begin paragraph
+        value access is authority.authorize with caller being caller, grant_id being grant_id,
+            scope being scope, operation being 1
+        when access.code does not equal "ok" or scope does not equal my scope_name then
+            give failed_resolution with code being "denied"
+        end when
+        when not (valid_proposition with claim being claim) or as_of is less than minus 1 or
+            max_work is less than 1 or max_work is greater than 128 or
+            max_evidence is less than 1 or max_evidence is greater than 128 then
+            give failed_resolution with code being "invalid"
+        end when
+        when max_work is greater than access.work_limit or max_evidence is greater than access.result_limit then
+            give failed_resolution with code being "denied"
+        end when
+        variable snapshot as number is as_of
+        when snapshot equals minus 1 then
+            set snapshot to my revision_value
+        end when
+        when snapshot is greater than my revision_value then
+            give failed_resolution with code being "invalid"
+        end when
+
+        variable withdrawn as array of number is []
+        variable ids as array of number is []
+        variable index as number is snapshot minus 1
+        variable inspected as number is 0
+        variable supporting as number is 0
+        variable opposing as number is 0
+        repeat while index is at least 0 and inspected is less than max_work
+            set inspected to inspected plus 1
+            when (my event_kinds at index) equals 2 then
+                append (my targets at index) to withdrawn
+            end when
+            when (my event_kinds at index) equals 1 then
+                when (my subjects at index) equals claim.subject and (my relations at index) equals claim.relation and
+                    (my objects at index) equals claim.object_value then
+                    value evidence_id is index plus 1
+                    variable active as boolean is yes
+                    repeat for each target in withdrawn
+                        when target equals evidence_id then
+                            set active to no
+                        end when
+                    end repeat
+                    when active then
+                        when (my polarities at index) equals 1 then
+                            set supporting to supporting plus 1
+                        otherwise
+                            set opposing to opposing plus 1
+                        end when
+                        when (the length of ids) is less than max_evidence then
+                            append evidence_id to ids
+                        end when
+                    end when
+                end when
+            end when
+            set index to index minus 1
+        end repeat
+        value complete is index is less than 0
+        variable state as text is "incomplete"
+        when complete then
+            set state to "unknown"
+            when supporting is greater than 0 and opposing is greater than 0 then
+                set state to "contested"
+            end when
+            when supporting is greater than 0 and opposing equals 0 then
+                set state to "supported"
+            end when
+            when opposing is greater than 0 and supporting equals 0 then
+                set state to "contradicted"
+            end when
+        end when
+        value evidence_complete is complete and (the length of ids) equals supporting plus opposing
+        give build resolution with code being "ok", state being state, revision being snapshot,
+            complete being complete, evidence_complete being evidence_complete, inspected being inspected,
+            supporting being supporting, opposing being opposing, evidence_ids being ids
+    end paragraph
+
+    public inspect receives authority as authority_registry, caller as access_context,
+        grant_id as number, scope as text, evidence_id as number, as_of as number returns inspect_receipt begin paragraph
+        value access is authority.authorize with caller being caller, grant_id being grant_id,
+            scope being scope, operation being 1
+        when access.code does not equal "ok" or scope does not equal my scope_name then
+            give failed_inspect with code being "denied"
+        end when
+        when evidence_id is less than 1 or as_of is less than minus 1 then
+            give failed_inspect with code being "invalid"
+        end when
+        variable snapshot as number is as_of
+        when snapshot equals minus 1 then
+            set snapshot to my revision_value
+        end when
+        when snapshot is greater than my revision_value then
+            give failed_inspect with code being "invalid"
+        end when
+        when snapshot is greater than access.work_limit then
+            give failed_inspect with code being "limit"
+        end when
+        when evidence_id is greater than snapshot then
+            give failed_inspect with code being "not_found"
+        end when
+        value position is evidence_id minus 1
+        when (my event_kinds at position) does not equal 1 then
+            give failed_inspect with code being "not_found"
+        end when
+        variable withdrawn_at as number is 0
+        variable index as number is evidence_id
+        repeat while index is less than snapshot
+            when (my event_kinds at index) equals 2 and (my targets at index) equals evidence_id then
+                set withdrawn_at to index plus 1
+            end when
+            set index to index plus 1
+        end repeat
+        value item is build evidence_item with id being evidence_id, subject being my subjects at position,
+            relation being my relations at position, object_value being my objects at position,
+            supports being (my polarities at position) equals 1, source being my sources at position,
+            entity being my entities at position, session being my sessions at position,
+            asserted_at being evidence_id, withdrawn_at being withdrawn_at
+        give build inspect_receipt with code being "ok", revision being snapshot, evidence being item
+    end paragraph
+end class
+
+public open_store receives scope as text returns evidence_store begin paragraph
+    give build evidence_store with scope_name being scope, revision_value being 0, event_kinds being [],
+        subjects being [], relations being [], objects being [], polarities being [], sources being [],
+        entities being [], sessions being [], targets being []
+end paragraph
+
+note if_test_mode
+test_context receives entity as text returns access_context begin paragraph
+    give build access_context with entity being entity, session being 1, audience being "enigma", tick being 1
+end paragraph
+
+note if_test_mode
+test_claim returns proposition begin paragraph
+    give build proposition with subject being "release:enigma", relation being "ready", object_value being "yes"
+end paragraph
+
+note suite "enigma.evidence"
+opposing_reports_are_retained begin test
+    value authority is open_authority with nothing
+    value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 15, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller is test_context with entity being "agent:a"
+    value store is open_store with scope being "work"
+    value claim is test_claim with nothing
+    value first is store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, supports being yes, source being "test:passing", expected_revision being 0
+    expect first.code equals "ok"
+    value second is store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, supports being no, source being "test:failing", expected_revision being 1
+    expect second.code equals "ok"
+    value result is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect result.state equals "contested"
+    expect result.supporting equals 1
+    expect result.opposing equals 1
+    expect result.complete
+    expect result.evidence_complete
+    expect (result.evidence_ids at 0) equals 2
+    expect (result.evidence_ids at 1) equals 1
+end test
+
+note suite "enigma.evidence"
+withdrawal_preserves_history_and_empty_snapshot begin test
+    value authority is open_authority with nothing
+    value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 7, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller is test_context with entity being "agent:a"
+    value store is open_store with scope being "work"
+    value claim is test_claim with nothing
+    value added is store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, supports being yes, source being "test:report", expected_revision being 0
+    value removed is store.withdraw with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", evidence_id being added.evidence_id, expected_revision being 1
+    expect removed.revision equals 2
+    value current is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect current.state equals "unknown"
+    value historical is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being 1, max_work being 128, max_evidence being 128
+    expect historical.state equals "supported"
+    value empty is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being 0, max_work being 1, max_evidence being 1
+    expect empty.state equals "unknown"
+    expect empty.revision equals 0
+    value old_item is store.inspect with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", evidence_id being 1, as_of being 1
+    value new_item is store.inspect with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", evidence_id being 1, as_of being 2
+    expect old_item.evidence.withdrawn_at equals 0
+    expect new_item.evidence.withdrawn_at equals 2
+end test
+
+note suite "enigma.evidence"
+partial_scan_and_output_truncation_are_distinct begin test
+    value authority is open_authority with nothing
+    value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 3, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller is test_context with entity being "agent:a"
+    value store is open_store with scope being "work"
+    value claim is test_claim with nothing
+    evaluate store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, supports being no, source being "test:old", expected_revision being 0
+    evaluate store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, supports being yes, source being "test:new", expected_revision being 1
+    value partial is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 1, max_evidence being 1
+    expect partial.state equals "incomplete"
+    expect not partial.complete
+    expect partial.supporting equals 1
+    expect partial.opposing equals 0
+    value capped is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 2, max_evidence being 1
+    expect capped.state equals "contested"
+    expect capped.complete
+    expect not capped.evidence_complete
+    expect (the length of capped.evidence_ids) equals 1
+end test
+
+note suite "enigma.evidence"
+denial_precedes_validation_and_reveals_no_revision begin test
+    value authority is open_authority with nothing
+    value issued is authority.install with entity being "agent:a", session being 1, scope being "other",
+        operations being 15, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller is test_context with entity being "agent:a"
+    value store is open_store with scope being "private"
+    value claim is empty_proposition with nothing
+    value denied is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "private", claim being claim, as_of being 999, max_work being 0, max_evidence being 0
+    expect denied.code equals "denied"
+    expect denied.revision equals 0
+    expect denied.inspected equals 0
+    expect (the length of denied.evidence_ids) equals 0
+    value item is store.inspect with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "private", evidence_id being 999, as_of being 999
+    expect item.code equals "denied"
+    expect item.evidence.source equals ""
+end test
+
+note suite "enigma.evidence"
+failed_writes_and_other_authors_cannot_change_history begin test
+    value authority is open_authority with nothing
+    value first_grant is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 7, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value other_grant is authority.install with entity being "agent:b", session being 1, scope being "work",
+        operations being 7, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value first_context is test_context with entity being "agent:a"
+    value other_context is test_context with entity being "agent:b"
+    value store is open_store with scope being "work"
+    value claim is test_claim with nothing
+    value added is store.assert_claim with authority being authority, caller being first_context, grant_id being first_grant.grant_id,
+        scope being "work", claim being claim, supports being yes, source being "test:original", expected_revision being 0
+    value denied is store.withdraw with authority being authority, caller being other_context, grant_id being other_grant.grant_id,
+        scope being "work", evidence_id being added.evidence_id, expected_revision being 1
+    expect denied.code equals "denied"
+    value stale is store.assert_claim with authority being authority, caller being first_context, grant_id being first_grant.grant_id,
+        scope being "work", claim being claim, supports being no, source being "test:stale", expected_revision being 0
+    expect stale.code equals "conflict"
+    value result is store.resolve with authority being authority, caller being first_context, grant_id being first_grant.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect result.revision equals 1
+    expect result.state equals "supported"
+end test
+
+note suite "enigma.evidence"
+request_and_reply_mutation_do_not_rewrite_evidence begin test
+    value authority is open_authority with nothing
+    value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 3, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller is test_context with entity being "agent:a"
+    value store is open_store with scope being "work"
+    value claim is test_claim with nothing
+    evaluate store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, supports being yes, source being "test:source", expected_revision being 0
+    set claim.object_value to "mutated"
+    value item is store.inspect with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", evidence_id being 1, as_of being minus 1
+    expect item.evidence.object_value equals "yes"
+    expect item.evidence.entity equals "agent:a"
+    set item.evidence.source to "mutated"
+    value fresh is store.inspect with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", evidence_id being 1, as_of being minus 1
+    expect fresh.evidence.source equals "test:source"
+    value original is test_claim with nothing
+    value result is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being original, as_of being minus 1, max_work being 128, max_evidence being 128
+    set result.evidence_ids at 0 to 999
+    value reread is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being original, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect (reread.evidence_ids at 0) equals 1
+end test
+
+note suite "enigma.evidence"
+unknown_is_distinct_from_opposition_and_scopes_are_independent begin test
+    value authority is open_authority with nothing
+    value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 3, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value other_issued is authority.install with entity being "agent:a", session being 1, scope being "other",
+        operations being 3, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller is test_context with entity being "agent:a"
+    value store is open_store with scope being "work"
+    value other_store is open_store with scope being "other"
+    value claim is test_claim with nothing
+    evaluate other_store.assert_claim with authority being authority, caller being caller, grant_id being other_issued.grant_id,
+        scope being "other", claim being claim, supports being yes, source being "test:other", expected_revision being 0
+    value empty is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 1, max_evidence being 1
+    expect empty.state equals "unknown"
+    expect empty.revision equals 0
+    expect empty.inspected equals 0
+    value added is store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, supports being no, source being "test:opposition", expected_revision being 0
+    expect added.evidence_id equals 1
+    value opposed is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 1, max_evidence being 1
+    expect opposed.state equals "contradicted"
+    expect opposed.supporting equals 0
+    expect opposed.opposing equals 1
+end test
+
+note suite "enigma.evidence"
+withdrawal_inspection_and_history_obey_current_grants begin test
+    value authority is open_authority with nothing
+    value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 7, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value narrow is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 5, expires being 100, work_limit being 1, result_limit being 1, tick being 0
+    value caller is test_context with entity being "agent:a"
+    value store is open_store with scope being "work"
+    value claim is test_claim with nothing
+    evaluate store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, supports being yes, source being "test:first", expected_revision being 0
+    evaluate store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, supports being no, source being "test:second", expected_revision being 1
+    value limited is store.withdraw with authority being authority, caller being caller, grant_id being narrow.grant_id,
+        scope being "work", evidence_id being 1, expected_revision being 2
+    expect limited.code equals "limit"
+    expect limited.revision equals 0
+    value inspection is store.inspect with authority being authority, caller being caller, grant_id being narrow.grant_id,
+        scope being "work", evidence_id being 1, as_of being minus 1
+    expect inspection.code equals "limit"
+    expect inspection.evidence.source equals ""
+    value removed is store.withdraw with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", evidence_id being 1, expected_revision being 2
+    expect removed.revision equals 3
+    value duplicate is store.withdraw with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", evidence_id being 1, expected_revision being 3
+    expect duplicate.code equals "denied"
+    value still_current is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect still_current.revision equals 3
+    value expired is build access_context with entity being "agent:a", session being 1, audience being "enigma", tick being 100
+    value historical is store.resolve with authority being authority, caller being expired, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being 1, max_work being 128, max_evidence being 128
+    expect historical.code equals "denied"
+    expect historical.revision equals 0
+end test
+
+note suite "enigma.evidence"
+capacity_failure_does_not_append_partial_evidence begin test
+    value authority is open_authority with nothing
+    value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 3, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller is test_context with entity being "agent:a"
+    value store is open_store with scope being "work"
+    value claim is test_claim with nothing
+    repeat for index from 0 to 128
+        value added is store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+            scope being "work", claim being claim, supports being yes, source being "test:bounded", expected_revision being index
+        expect added.code equals "ok"
+    end repeat
+    value full is store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, supports being no, source being "test:overflow", expected_revision being 128
+    expect full.code equals "capacity"
+    value result is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect result.revision equals 128
+    expect result.supporting equals 128
+    expect result.opposing equals 0
+    expect result.complete
+end test

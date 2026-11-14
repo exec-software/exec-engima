@@ -1,0 +1,61 @@
+book enigma.demo
+
+read open_authority, access_context from enigma.authority
+read open_store, proposition from enigma.ledger
+read connect, describe_surface from enigma.client
+
+public show_surface returns nothing begin paragraph
+    value surface is describe_surface with nothing
+    say "nildata 1"
+    say "object"
+    say "  protocol is " plus quote plus surface.protocol plus quote
+    say "  model is " plus quote plus surface.model plus quote
+    say "  operations is an array"
+    repeat for each operation in surface.operations
+        say "    item is " plus quote plus operation plus quote
+    end repeat
+    say "  end array"
+    say formatted "  max_events is {surface.max_events}"
+    say formatted "  max_text_units is {surface.max_text_units}"
+    say formatted "  max_scope_units is {surface.max_scope_units}"
+    say "  latest_revision_sentinel is -1"
+    say "  supports_persistence is false"
+    say "  requires_trusted_host is true"
+    say "end object"
+    give nothing
+end paragraph
+
+!!! Synthetic trusted-host setup. It neither authenticates an entity nor binds a
+!!! native task/channel; real hosts must supply a fresh admitted context per call.
+public run_demo returns override integer begin paragraph
+    value authority is open_authority with nothing
+    value issued is authority.install with entity being "demo:agent", session being 1, scope being "demo",
+        operations being 7, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller is build access_context with entity being "demo:agent", session being 1, audience being "enigma", tick being 1
+    value store is open_store with scope being "demo"
+    value client is connect with host_store being store, host_authority being authority,
+        host_context being caller, grant_id being issued.grant_id, scope being "demo"
+    value claim is build proposition with subject being "release:sample", relation being "ready", object_value being "yes"
+    value first is client.support with claim being claim, source being "synthetic:passing-check", expected_revision being 0
+    value initial is client.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    value second is client.oppose with claim being claim, source being "synthetic:failing-check", expected_revision being 1
+    value contested is client.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    value removed is client.withdraw with evidence_id being second.evidence_id, expected_revision being 2
+    value current is client.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    value historical is client.resolve with claim being claim, as_of being 2, max_work being 128, max_evidence being 128
+    value bounded is client.resolve with claim being claim, as_of being 2, max_work being 1, max_evidence being 1
+    value revoked is authority.revoke with caller being caller, grant_id being issued.grant_id
+    value denied is client.resolve with claim being claim, as_of being 2, max_work being 128, max_evidence being 128
+    when first.code does not equal "ok" or second.code does not equal "ok" or
+        removed.code does not equal "ok" or revoked.code does not equal "ok" then
+        give 1
+    end when
+    say "Enigma evidence demo (synthetic, in memory)"
+    say "initial: " plus initial.state
+    say "after opposition: " plus contested.state
+    say "after withdrawal: " plus current.state
+    say "historical revision 2: " plus historical.state
+    say "budget 1: " plus bounded.state
+    say "after revocation: " plus denied.code
+    give 0
+end paragraph

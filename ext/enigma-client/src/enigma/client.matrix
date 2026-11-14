@@ -1,0 +1,233 @@
+book enigma.client
+
+read access_context, authority_registry, open_authority from enigma.authority
+read proposition, evidence_store, write_receipt, resolution, inspect_receipt, open_store from enigma.ledger
+
+!!! A discoverable operation contract, not an authentication mechanism.
+public surface_info begin record
+    field protocol as text
+    field model as text
+    field operations as array of text
+    field max_events as number
+    field max_text_units as number
+    field max_scope_units as number
+    field latest_revision_sentinel as number
+    field supports_persistence as boolean
+    field requires_trusted_host as boolean
+end record
+
+public describe_surface returns surface_info begin paragraph
+    give build surface_info with protocol being "enigma.evidence.v1", model being "evidence", operations being ["support", "oppose", "resolve", "inspect", "withdraw"], max_events being 128, max_text_units being 256, max_scope_units being 128, latest_revision_sentinel being minus 1, supports_persistence being no, requires_trusted_host being yes
+end paragraph
+
+!!! The host supplies authority and context. This package never mints grants.
+!!! Matrix class fields are public; this handle is not a sandbox boundary.
+public evidence_client begin class
+    field host_store as evidence_store
+    field host_authority as authority_registry
+    field host_context as access_context
+    field grant_id as number
+    field scope as text
+
+    public support receives claim as proposition, source as text, expected_revision as number returns write_receipt begin paragraph
+        give my host_store.assert_claim with authority being my host_authority, caller being my host_context, grant_id being my grant_id, scope being my scope, claim being claim, supports being yes, source being source, expected_revision being expected_revision
+    end paragraph
+
+    public oppose receives claim as proposition, source as text, expected_revision as number returns write_receipt begin paragraph
+        give my host_store.assert_claim with authority being my host_authority, caller being my host_context, grant_id being my grant_id, scope being my scope, claim being claim, supports being no, source being source, expected_revision being expected_revision
+    end paragraph
+
+    public withdraw receives evidence_id as number, expected_revision as number returns write_receipt begin paragraph
+        give my host_store.withdraw with authority being my host_authority, caller being my host_context, grant_id being my grant_id, scope being my scope, evidence_id being evidence_id, expected_revision being expected_revision
+    end paragraph
+
+    public resolve receives claim as proposition, as_of as number, max_work as number, max_evidence as number returns resolution begin paragraph
+        give my host_store.resolve with authority being my host_authority, caller being my host_context, grant_id being my grant_id, scope being my scope, claim being claim, as_of being as_of, max_work being max_work, max_evidence being max_evidence
+    end paragraph
+
+    public inspect receives evidence_id as number, as_of as number returns inspect_receipt begin paragraph
+        give my host_store.inspect with authority being my host_authority, caller being my host_context, grant_id being my grant_id, scope being my scope, evidence_id being evidence_id, as_of being as_of
+    end paragraph
+end class
+
+public connect receives host_store as evidence_store, host_authority as authority_registry, host_context as access_context, grant_id as number, scope as text returns evidence_client begin paragraph
+    value context_copy is build access_context with entity being host_context.entity, session being host_context.session, audience being host_context.audience, tick being host_context.tick
+    give build evidence_client with host_store being host_store, host_authority being host_authority, host_context being context_copy, grant_id being grant_id, scope being scope
+end paragraph
+
+note if_test_mode
+fixture_client receives operations as number returns evidence_client begin paragraph
+    value authority is open_authority with nothing
+    value granted is authority.install with entity being "client-test-agent", session being 1, scope being "client-tests", operations being operations, expires being 1000, work_limit being 128, result_limit being 128, tick being 1
+    expect granted.code equals "ok"
+    value caller is build access_context with entity being "client-test-agent", session being 1, audience being "enigma", tick being 1
+    value ledger is open_store with scope being "client-tests"
+    give connect with host_store being ledger, host_authority being authority, host_context being caller, grant_id being granted.grant_id, scope being "client-tests"
+end paragraph
+
+note if_test_mode
+fixture_proposition returns proposition begin paragraph
+    give build proposition with subject being "sample:release", relation being "ready-for", object_value being "review"
+end paragraph
+
+note suite "enigma.client"
+describes_typed_surface_and_current_limits begin test
+    value surface is describe_surface with nothing
+    expect surface.protocol equals "enigma.evidence.v1"
+    expect surface.model equals "evidence"
+    expect (the length of surface.operations) equals 5
+    expect surface.max_events equals 128
+    expect surface.max_text_units equals 256
+    expect surface.max_scope_units equals 128
+    expect surface.latest_revision_sentinel equals minus 1
+    expect not surface.supports_persistence
+    expect surface.requires_trusted_host
+    set surface.operations at 0 to "changed"
+    value fresh_surface is describe_surface with nothing
+    expect (fresh_surface.operations at 0) equals "support"
+end test
+
+note suite "enigma.client"
+support_and_opposition_preserve_separate_sources begin test
+    value adapter is fixture_client with operations being 7
+    value claim is fixture_proposition with nothing
+    value first_write is adapter.support with claim being claim, source being "fixture:support", expected_revision being 0
+    value second_write is adapter.oppose with claim being claim, source being "fixture:opposition", expected_revision being first_write.revision
+    expect first_write.code equals "ok"
+    expect second_write.code equals "ok"
+    value observed is adapter.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect observed.code equals "ok"
+    expect observed.state equals "contested"
+    expect observed.complete
+    expect observed.evidence_complete
+    expect observed.supporting equals 1
+    expect observed.opposing equals 1
+    expect (the length of observed.evidence_ids) equals 2
+    value source_item is adapter.inspect with evidence_id being first_write.evidence_id, as_of being minus 1
+    expect source_item.code equals "ok"
+    expect source_item.evidence.source equals "fixture:support"
+    expect source_item.evidence.entity equals "client-test-agent"
+    expect source_item.evidence.session equals 1
+end test
+
+note suite "enigma.client"
+zero_snapshot_is_not_replaced_with_latest begin test
+    value adapter is fixture_client with operations being 7
+    value claim is fixture_proposition with nothing
+    value written is adapter.support with claim being claim, source being "fixture:initial", expected_revision being 0
+    expect written.code equals "ok"
+    value empty_history is adapter.resolve with claim being claim, as_of being 0, max_work being 128, max_evidence being 128
+    value latest is adapter.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect empty_history.code equals "ok"
+    expect empty_history.state equals "unknown"
+    expect empty_history.revision equals 0
+    expect empty_history.supporting equals 0
+    expect latest.state equals "supported"
+end test
+
+note suite "enigma.client"
+withdrawal_keeps_historical_disagreement begin test
+    value adapter is fixture_client with operations being 7
+    value claim is fixture_proposition with nothing
+    value supported is adapter.support with claim being claim, source being "fixture:support", expected_revision being 0
+    value opposed is adapter.oppose with claim being claim, source being "fixture:oppose", expected_revision being supported.revision
+    value withdrawn is adapter.withdraw with evidence_id being opposed.evidence_id, expected_revision being opposed.revision
+    expect withdrawn.code equals "ok"
+    value current_answer is adapter.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    value historical_answer is adapter.resolve with claim being claim, as_of being opposed.revision, max_work being 128, max_evidence being 128
+    expect current_answer.state equals "supported"
+    expect current_answer.opposing equals 0
+    expect historical_answer.state equals "contested"
+    expect historical_answer.opposing equals 1
+end test
+
+note suite "enigma.client"
+stale_write_is_not_retried_at_latest begin test
+    value adapter is fixture_client with operations being 7
+    value claim is fixture_proposition with nothing
+    value written is adapter.support with claim being claim, source being "fixture:support", expected_revision being 0
+    expect written.code equals "ok"
+    value stale_write is adapter.oppose with claim being claim, source being "fixture:stale", expected_revision being 0
+    expect stale_write.code does not equal "ok"
+    value current_answer is adapter.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect current_answer.revision equals written.revision
+    expect current_answer.opposing equals 0
+end test
+
+note suite "enigma.client"
+work_and_output_incompleteness_remain_distinct begin test
+    value adapter is fixture_client with operations being 7
+    value claim is fixture_proposition with nothing
+    value supported is adapter.support with claim being claim, source being "fixture:support", expected_revision being 0
+    value opposed is adapter.oppose with claim being claim, source being "fixture:oppose", expected_revision being supported.revision
+    expect opposed.code equals "ok"
+    value partial_answer is adapter.resolve with claim being claim, as_of being minus 1, max_work being 1, max_evidence being 1
+    expect partial_answer.code equals "ok"
+    expect not partial_answer.complete
+    expect partial_answer.state equals "incomplete"
+    value limited_evidence is adapter.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 1
+    expect limited_evidence.code equals "ok"
+    expect limited_evidence.complete
+    expect not limited_evidence.evidence_complete
+    expect limited_evidence.state equals "contested"
+    expect (the length of limited_evidence.evidence_ids) equals 1
+end test
+
+note suite "enigma.client"
+read_only_grant_does_not_gain_write_authority begin test
+    value adapter is fixture_client with operations being 1
+    value claim is fixture_proposition with nothing
+    value denied_write is adapter.support with claim being claim, source being "fixture:denied", expected_revision being 0
+    expect denied_write.code does not equal "ok"
+    value empty_answer is adapter.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect empty_answer.code equals "ok"
+    expect empty_answer.revision equals 0
+    expect empty_answer.state equals "unknown"
+end test
+
+note suite "enigma.client"
+connection_copies_context_instead_of_aliasing_caller_record begin test
+    value authority is open_authority with nothing
+    value granted is authority.install with entity being "original-agent", session being 1, scope being "client-tests", operations being 7, expires being 1000, work_limit being 128, result_limit being 128, tick being 1
+    expect granted.code equals "ok"
+    value caller is build access_context with entity being "original-agent", session being 1, audience being "enigma", tick being 1
+    value ledger is open_store with scope being "client-tests"
+    value adapter is connect with host_store being ledger, host_authority being authority, host_context being caller, grant_id being granted.grant_id, scope being "client-tests"
+    set caller.entity to "changed-agent"
+    set caller.session to 99
+    value claim is fixture_proposition with nothing
+    value written is adapter.support with claim being claim, source being "fixture:copy", expected_revision being 0
+    expect written.code equals "ok"
+    value observed is adapter.inspect with evidence_id being written.evidence_id, as_of being minus 1
+    expect observed.code equals "ok"
+    expect observed.evidence.entity equals "original-agent"
+    expect observed.evidence.session equals 1
+end test
+
+note suite "enigma.client"
+shared_authority_honors_revocation_after_connection begin test
+    value adapter is fixture_client with operations being 7
+    value claim is fixture_proposition with nothing
+    value written is adapter.support with claim being claim, source being "fixture:before-revoke", expected_revision being 0
+    expect written.code equals "ok"
+    value revoked is adapter.host_authority.revoke with caller being adapter.host_context, grant_id being adapter.grant_id
+    expect revoked.code equals "ok"
+    value denied_read is adapter.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect denied_read.code does not equal "ok"
+    expect (the length of denied_read.evidence_ids) equals 0
+end test
+
+note suite "enigma.client"
+host_reconnect_supplies_fresh_context_per_dispatch begin test
+    value adapter is fixture_client with operations being 7
+    value current_context is build access_context with entity being "client-test-agent", session being 1, audience being "enigma", tick being 2
+    value refreshed is connect with host_store being adapter.host_store, host_authority being adapter.host_authority, host_context being current_context, grant_id being adapter.grant_id, scope being adapter.scope
+    value claim is fixture_proposition with nothing
+    value written is refreshed.support with claim being claim, source being "fixture:fresh-context", expected_revision being 0
+    expect written.code equals "ok"
+    value stale_answer is adapter.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect stale_answer.code does not equal "ok"
+    value current_answer is refreshed.resolve with claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect current_answer.code equals "ok"
+    expect current_answer.state equals "supported"
+end test

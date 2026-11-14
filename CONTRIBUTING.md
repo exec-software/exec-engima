@@ -1,6 +1,6 @@
 # Contributing
 
-Enigma is at the project-seed stage. Read [the design seed](docs/design/README.md),
+Enigma is in early engine development. Read [the design](docs/design/README.md),
 [development guide](docs/development.md), and [security policy](SECURITY.md) first.
 
 Write engine code and its unit tests in Matrix. Keep toolchain glue small and

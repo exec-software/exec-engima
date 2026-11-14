@@ -1,0 +1,546 @@
+book enigma.authority
+
+!!! Trusted-host authority model, not an authenticator or a token verifier.
+!!! The host supplies the verified entity/session and monotonic tick. Current
+!!! Matrix class fields are not an isolation boundary against same-process code.
+
+public access_context begin record
+    field entity as text
+    field session as number
+    field audience as text
+    field tick as number
+end record
+
+public grant_receipt begin record
+    field code as text
+    field grant_id as number
+end record
+
+public access_decision begin record
+    field code as text
+    field work_limit as number
+    field result_limit as number
+    field entity as text
+end record
+
+denied_receipt returns grant_receipt begin paragraph
+    give build grant_receipt with code being "denied", grant_id being 0
+end paragraph
+
+denied_decision returns access_decision begin paragraph
+    give build access_decision with code being "denied", work_limit being 0, result_limit being 0, entity being ""
+end paragraph
+
+valid_name receives input as text returns boolean begin paragraph
+    give (the length of input) is greater than 0 and (the length of input) is at most 128
+end paragraph
+
+valid_bounds receives operations as number, work_limit as number, result_limit as number returns boolean begin paragraph
+    give operations is greater than 0 and operations is at most 15 and
+        work_limit is greater than 0 and work_limit is at most 65536 and
+        result_limit is greater than 0 and result_limit is at most 65536
+end paragraph
+
+public authority_registry begin class
+    field grant_count as number
+    field clock_floor as number
+    field holder_entities as array of text
+    field holder_sessions as array of number
+    field scopes as array of text
+    field rights as array of number
+    field expiries as array of number
+    field work_limits as array of number
+    field result_limits as array of number
+    field parents as array of number
+    field revoked as array of boolean
+
+    ready returns boolean begin paragraph
+        give my grant_count is at least 0 and my grant_count is at most 256 and
+            my clock_floor is at least 0 and
+            (the length of my holder_entities) equals my grant_count and
+            (the length of my holder_sessions) equals my grant_count and
+            (the length of my scopes) equals my grant_count and
+            (the length of my rights) equals my grant_count and
+            (the length of my expiries) equals my grant_count and
+            (the length of my work_limits) equals my grant_count and
+            (the length of my result_limits) equals my grant_count and
+            (the length of my parents) equals my grant_count and
+            (the length of my revoked) equals my grant_count
+    end paragraph
+
+    accept_context receives caller as access_context returns boolean begin paragraph
+        when not (my ready with nothing) then
+            give no
+        end when
+        when not (valid_name with input being caller.entity) or caller.session is at most 0 or
+            caller.audience does not equal "enigma" or caller.tick is less than my clock_floor then
+            give no
+        end when
+        set my clock_floor to caller.tick
+        give yes
+    end paragraph
+
+    live receives grant_id as number, tick as number returns boolean begin paragraph
+        when grant_id is at most 0 or grant_id is greater than my grant_count then
+            give no
+        end when
+        variable cursor as number is grant_id
+        variable depth as number is 0
+        repeat while cursor is greater than 0
+            when cursor is greater than my grant_count or depth is at least 256 then
+                give no
+            end when
+            value index is cursor minus 1
+            when (my revoked at index) or tick is at least (my expiries at index) then
+                give no
+            end when
+            value parent_id is my parents at index
+            when parent_id is less than 0 or parent_id is at least cursor then
+                give no
+            end when
+            set cursor to parent_id
+            set depth to depth plus 1
+        end repeat
+        give yes
+    end paragraph
+
+    bound_holder receives caller as access_context, grant_id as number returns boolean begin paragraph
+        when not (my accept_context with caller being caller) then
+            give no
+        end when
+        when not (my live with grant_id being grant_id, tick being caller.tick) then
+            give no
+        end when
+        value index is grant_id minus 1
+        give caller.entity equals (my holder_entities at index) and caller.session equals (my holder_sessions at index)
+    end paragraph
+
+    append_grant receives entity as text, session as number, scope as text, operations as number,
+        expires as number, work_limit as number, result_limit as number, parent_id as number returns grant_receipt begin paragraph
+        append entity to my holder_entities
+        append session to my holder_sessions
+        append scope to my scopes
+        append operations to my rights
+        append expires to my expiries
+        append work_limit to my work_limits
+        append result_limit to my result_limits
+        append parent_id to my parents
+        append no to my revoked
+        set my grant_count to my grant_count plus 1
+        give build grant_receipt with code being "ok", grant_id being my grant_count
+    end paragraph
+
+    !!! Host-only root installation. No request-supplied entity may invoke this
+    !!! as an enrollment or self-granting API.
+    public install receives entity as text, session as number, scope as text, operations as number,
+        expires as number, work_limit as number, result_limit as number, tick as number returns grant_receipt begin paragraph
+        when not (my ready with nothing) then
+            give build grant_receipt with code being "invalid", grant_id being 0
+        end when
+        when not (valid_name with input being entity) or not (valid_name with input being scope) or
+            session is at most 0 or tick is less than my clock_floor or expires is at most tick or
+            my grant_count is at least 256 or not (valid_bounds with operations being operations, work_limit being work_limit, result_limit being result_limit) then
+            give build grant_receipt with code being "invalid", grant_id being 0
+        end when
+        set my clock_floor to tick
+        give my append_grant with entity being entity, session being session, scope being scope,
+            operations being operations, expires being expires, work_limit being work_limit,
+            result_limit being result_limit, parent_id being 0
+    end paragraph
+
+    public authorize receives caller as access_context, grant_id as number, scope as text, operation as number returns access_decision begin paragraph
+        when not (my bound_holder with caller being caller, grant_id being grant_id) then
+            give denied_decision with nothing
+        end when
+        when operation does not equal 1 and operation does not equal 2 and operation does not equal 4 and operation does not equal 8 then
+            give denied_decision with nothing
+        end when
+        value index is grant_id minus 1
+        when scope does not equal (my scopes at index) or ((my rights at index) bitwise and operation) does not equal operation then
+            give denied_decision with nothing
+        end when
+        give build access_decision with code being "ok", work_limit being (my work_limits at index),
+            result_limit being (my result_limits at index), entity being caller.entity
+    end paragraph
+
+    public delegate receives caller as access_context, parent_id as number, entity as text, session as number,
+        operations as number, expires as number, work_limit as number, result_limit as number returns grant_receipt begin paragraph
+        when not (my bound_holder with caller being caller, grant_id being parent_id) then
+            give denied_receipt with nothing
+        end when
+        value index is parent_id minus 1
+        value parent_rights is my rights at index
+        when (parent_rights bitwise and 8) does not equal 8 then
+            give denied_receipt with nothing
+        end when
+        when not (valid_name with input being entity) or session is at most 0 or
+            my grant_count is at least 256 or expires is at most caller.tick or expires is greater than (my expiries at index) or
+            not (valid_bounds with operations being operations, work_limit being work_limit, result_limit being result_limit) or
+            (operations bitwise and parent_rights) does not equal operations or
+            work_limit is greater than (my work_limits at index) or result_limit is greater than (my result_limits at index) then
+            give denied_receipt with nothing
+        end when
+        give my append_grant with entity being entity, session being session, scope being (my scopes at index),
+            operations being operations, expires being expires, work_limit being work_limit,
+            result_limit being result_limit, parent_id being parent_id
+    end paragraph
+
+    public revoke receives caller as access_context, grant_id as number returns grant_receipt begin paragraph
+        when not (my bound_holder with caller being caller, grant_id being grant_id) then
+            give denied_receipt with nothing
+        end when
+        set my revoked at (grant_id minus 1) to yes
+        give build grant_receipt with code being "ok", grant_id being grant_id
+    end paragraph
+end class
+
+public open_authority returns authority_registry begin paragraph
+    give build authority_registry with grant_count being 0, clock_floor being 0,
+        holder_entities being [], holder_sessions being [], scopes being [], rights being [],
+        expiries being [], work_limits being [], result_limits being [], parents being [], revoked being []
+end paragraph
+
+note if_test_mode
+test_context receives entity as text, session as number, tick as number returns access_context begin paragraph
+    give build access_context with entity being entity, session being session, audience being "enigma", tick being tick
+end paragraph
+
+note suite "enigma.authority"
+holder_session_scope_operation_and_audience_are_exact begin test
+    value registry is open_authority with nothing
+    value installed is registry.install with entity being "human", session being 11, scope being "public", operations being 1,
+        expires being 100, work_limit being 80, result_limit being 20, tick being 0
+    expect installed.code equals "ok"
+    expect installed.grant_id equals 1
+    value accepted is registry.authorize with caller being (test_context with entity being "human", session being 11, tick being 1),
+        grant_id being 1, scope being "public", operation being 1
+    expect accepted.code equals "ok"
+    expect accepted.entity equals "human"
+    expect accepted.work_limit equals 80
+    expect accepted.result_limit equals 20
+    value copied is registry.authorize with caller being (test_context with entity being "agent", session being 11, tick being 1),
+        grant_id being 1, scope being "public", operation being 1
+    expect copied.code equals "denied"
+    expect copied.entity equals ""
+    expect copied.work_limit equals 0
+    expect copied.result_limit equals 0
+    value stale is registry.authorize with caller being (test_context with entity being "human", session being 12, tick being 1),
+        grant_id being 1, scope being "public", operation being 1
+    expect stale.code equals "denied"
+    value wrong_scope is registry.authorize with caller being (test_context with entity being "human", session being 11, tick being 1),
+        grant_id being 1, scope being "private", operation being 1
+    expect wrong_scope.code equals "denied"
+    value wrong_operation is registry.authorize with caller being (test_context with entity being "human", session being 11, tick being 1),
+        grant_id being 1, scope being "public", operation being 2
+    expect wrong_operation.code equals "denied"
+    value wrong_audience is registry.authorize with caller being (build access_context with entity being "human", session being 11, audience being "other", tick being 1),
+        grant_id being 1, scope being "public", operation being 1
+    expect wrong_audience.code equals "denied"
+end test
+
+note suite "enigma.authority"
+invalid_host_install_does_not_allocate_grant_ids begin test
+    value registry is open_authority with nothing
+    value bad_entity is registry.install with entity being "", session being 1, scope being "scope", operations being 1,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect bad_entity.code equals "invalid"
+    expect bad_entity.grant_id equals 0
+    value bad_scope is registry.install with entity being "owner", session being 1, scope being "", operations being 1,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect bad_scope.code equals "invalid"
+    value bad_session is registry.install with entity being "owner", session being 0, scope being "scope", operations being 1,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect bad_session.code equals "invalid"
+    value bad_time is registry.install with entity being "owner", session being 1, scope being "scope", operations being 1,
+        expires being 100, work_limit being 20, result_limit being 5, tick being minus 1
+    expect bad_time.code equals "invalid"
+    value expired is registry.install with entity being "owner", session being 1, scope being "scope", operations being 1,
+        expires being 0, work_limit being 20, result_limit being 5, tick being 0
+    expect expired.code equals "invalid"
+    value good is registry.install with entity being "owner", session being 1, scope being "scope", operations being 1,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect good.code equals "ok"
+    expect good.grant_id equals 1
+end test
+
+note suite "enigma.authority"
+permission_masks_and_resource_bounds_are_validated begin test
+    value registry is open_authority with nothing
+    value no_rights is registry.install with entity being "owner", session being 1, scope being "scope", operations being 0,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect no_rights.code equals "invalid"
+    value unknown_rights is registry.install with entity being "owner", session being 1, scope being "scope", operations being 16,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect unknown_rights.code equals "invalid"
+    value no_work is registry.install with entity being "owner", session being 1, scope being "scope", operations being 1,
+        expires being 100, work_limit being 0, result_limit being 5, tick being 0
+    expect no_work.code equals "invalid"
+    value no_results is registry.install with entity being "owner", session being 1, scope being "scope", operations being 1,
+        expires being 100, work_limit being 20, result_limit being 0, tick being 0
+    expect no_results.code equals "invalid"
+    value huge_work is registry.install with entity being "owner", session being 1, scope being "scope", operations being 1,
+        expires being 100, work_limit being 65537, result_limit being 5, tick being 0
+    expect huge_work.code equals "invalid"
+    value huge_results is registry.install with entity being "owner", session being 1, scope being "scope", operations being 1,
+        expires being 100, work_limit being 20, result_limit being 65537, tick being 0
+    expect huge_results.code equals "invalid"
+    value installed is registry.install with entity being "owner", session being 1, scope being "scope", operations being 15,
+        expires being 100, work_limit being 65536, result_limit being 65536, tick being 0
+    expect installed.grant_id equals 1
+    value multiple is registry.authorize with caller being (test_context with entity being "owner", session being 1, tick being 0),
+        grant_id being 1, scope being "scope", operation being 3
+    expect multiple.code equals "denied"
+    value unknown is registry.authorize with caller being (test_context with entity being "owner", session being 1, tick being 0),
+        grant_id being 1, scope being "scope", operation being 16
+    expect unknown.code equals "denied"
+end test
+
+note suite "enigma.authority"
+expiry_boundary_and_clock_rollback_fail_closed begin test
+    value registry is open_authority with nothing
+    value installed is registry.install with entity being "owner", session being 1, scope being "scope", operations being 1,
+        expires being 10, work_limit being 20, result_limit being 5, tick being 5
+    expect installed.code equals "ok"
+    value before is registry.authorize with caller being (test_context with entity being "owner", session being 1, tick being 9),
+        grant_id being 1, scope being "scope", operation being 1
+    expect before.code equals "ok"
+    value at_expiry is registry.authorize with caller being (test_context with entity being "owner", session being 1, tick being 10),
+        grant_id being 1, scope being "scope", operation being 1
+    expect at_expiry.code equals "denied"
+    value rolled_back is registry.authorize with caller being (test_context with entity being "owner", session being 1, tick being 9),
+        grant_id being 1, scope being "scope", operation being 1
+    expect rolled_back.code equals "denied"
+    value old_install is registry.install with entity being "new-owner", session being 2, scope being "scope", operations being 1,
+        expires being 20, work_limit being 20, result_limit being 5, tick being 9
+    expect old_install.code equals "invalid"
+    value fresh_install is registry.install with entity being "new-owner", session being 2, scope being "scope", operations being 1,
+        expires being 20, work_limit being 20, result_limit being 5, tick being 10
+    expect fresh_install.grant_id equals 2
+end test
+
+note suite "enigma.authority"
+delegation_inherits_scope_and_attenuates_every_bound begin test
+    value registry is open_authority with nothing
+    value root_grant is registry.install with entity being "human", session being 10, scope being "research", operations being 15,
+        expires being 100, work_limit being 40, result_limit being 10, tick being 0
+    expect root_grant.code equals "ok"
+    value delegated is registry.delegate with caller being (test_context with entity being "human", session being 10, tick being 1),
+        parent_id being 1, entity being "agent", session being 20, operations being 9,
+        expires being 50, work_limit being 20, result_limit being 5
+    expect delegated.code equals "ok"
+    expect delegated.grant_id equals 2
+    value child_read is registry.authorize with caller being (test_context with entity being "agent", session being 20, tick being 1),
+        grant_id being 2, scope being "research", operation being 1
+    expect child_read.code equals "ok"
+    expect child_read.entity equals "agent"
+    expect child_read.work_limit equals 20
+    expect child_read.result_limit equals 5
+    value child_write is registry.authorize with caller being (test_context with entity being "agent", session being 20, tick being 1),
+        grant_id being 2, scope being "research", operation being 2
+    expect child_write.code equals "denied"
+    value child_scope is registry.authorize with caller being (test_context with entity being "agent", session being 20, tick being 1),
+        grant_id being 2, scope being "other", operation being 1
+    expect child_scope.code equals "denied"
+    value grandchild is registry.delegate with caller being (test_context with entity being "agent", session being 20, tick being 2),
+        parent_id being 2, entity being "subagent", session being 30, operations being 1,
+        expires being 40, work_limit being 10, result_limit being 2
+    expect grandchild.code equals "ok"
+    expect grandchild.grant_id equals 3
+    value grandchild_read is registry.authorize with caller being (test_context with entity being "subagent", session being 30, tick being 2),
+        grant_id being 3, scope being "research", operation being 1
+    expect grandchild_read.code equals "ok"
+    expect grandchild_read.work_limit equals 10
+    expect grandchild_read.result_limit equals 2
+end test
+
+note suite "enigma.authority"
+delegation_cannot_expand_rights_time_or_limits begin test
+    value registry is open_authority with nothing
+    value root_grant is registry.install with entity being "owner", session being 1, scope being "scope", operations being 9,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect root_grant.code equals "ok"
+    value expanded_rights is registry.delegate with caller being (test_context with entity being "owner", session being 1, tick being 1),
+        parent_id being 1, entity being "agent", session being 2, operations being 11,
+        expires being 50, work_limit being 10, result_limit being 2
+    expect expanded_rights.code equals "denied"
+    expect expanded_rights.grant_id equals 0
+    value expanded_time is registry.delegate with caller being (test_context with entity being "owner", session being 1, tick being 1),
+        parent_id being 1, entity being "agent", session being 2, operations being 1,
+        expires being 101, work_limit being 10, result_limit being 2
+    expect expanded_time.code equals "denied"
+    value expanded_work is registry.delegate with caller being (test_context with entity being "owner", session being 1, tick being 1),
+        parent_id being 1, entity being "agent", session being 2, operations being 1,
+        expires being 50, work_limit being 21, result_limit being 2
+    expect expanded_work.code equals "denied"
+    value expanded_results is registry.delegate with caller being (test_context with entity being "owner", session being 1, tick being 1),
+        parent_id being 1, entity being "agent", session being 2, operations being 1,
+        expires being 50, work_limit being 10, result_limit being 6
+    expect expanded_results.code equals "denied"
+    value valid_child is registry.delegate with caller being (test_context with entity being "owner", session being 1, tick being 1),
+        parent_id being 1, entity being "agent", session being 2, operations being 1,
+        expires being 100, work_limit being 20, result_limit being 5
+    expect valid_child.code equals "ok"
+    expect valid_child.grant_id equals 2
+end test
+
+note suite "enigma.authority"
+read_only_grant_cannot_delegate_but_can_revoke_itself begin test
+    value registry is open_authority with nothing
+    value root_grant is registry.install with entity being "reader", session being 1, scope being "scope", operations being 1,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect root_grant.code equals "ok"
+    value delegated is registry.delegate with caller being (test_context with entity being "reader", session being 1, tick being 1),
+        parent_id being 1, entity being "agent", session being 2, operations being 1,
+        expires being 50, work_limit being 10, result_limit being 2
+    expect delegated.code equals "denied"
+    value revoked_grant is registry.revoke with caller being (test_context with entity being "reader", session being 1, tick being 1), grant_id being 1
+    expect revoked_grant.code equals "ok"
+    value after is registry.authorize with caller being (test_context with entity being "reader", session being 1, tick being 1),
+        grant_id being 1, scope being "scope", operation being 1
+    expect after.code equals "denied"
+    value duplicate is registry.revoke with caller being (test_context with entity being "reader", session being 1, tick being 1), grant_id being 1
+    expect duplicate.code equals "denied"
+    expect duplicate.grant_id equals 0
+end test
+
+note suite "enigma.authority"
+revoking_ancestor_invalidates_every_descendant_without_admin_bypass begin test
+    value registry is open_authority with nothing
+    value root_grant is registry.install with entity being "human", session being 10, scope being "scope", operations being 15,
+        expires being 100, work_limit being 40, result_limit being 10, tick being 0
+    expect root_grant.code equals "ok"
+    value child is registry.delegate with caller being (test_context with entity being "human", session being 10, tick being 1),
+        parent_id being 1, entity being "agent", session being 20, operations being 9,
+        expires being 90, work_limit being 30, result_limit being 8
+    expect child.grant_id equals 2
+    value grandchild is registry.delegate with caller being (test_context with entity being "agent", session being 20, tick being 1),
+        parent_id being 2, entity being "subagent", session being 30, operations being 1,
+        expires being 80, work_limit being 20, result_limit being 5
+    expect grandchild.grant_id equals 3
+    value unrelated is registry.install with entity being "other", session being 40, scope being "scope", operations being 1,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 1
+    expect unrelated.grant_id equals 4
+    value fake_admin is registry.revoke with caller being (test_context with entity being "admin", session being 10, tick being 2), grant_id being 1
+    expect fake_admin.code equals "denied"
+    value revoked_root is registry.revoke with caller being (test_context with entity being "human", session being 10, tick being 2), grant_id being 1
+    expect revoked_root.code equals "ok"
+    value child_read is registry.authorize with caller being (test_context with entity being "agent", session being 20, tick being 2),
+        grant_id being 2, scope being "scope", operation being 1
+    expect child_read.code equals "denied"
+    value grandchild_read is registry.authorize with caller being (test_context with entity being "subagent", session being 30, tick being 2),
+        grant_id being 3, scope being "scope", operation being 1
+    expect grandchild_read.code equals "denied"
+    value new_child is registry.delegate with caller being (test_context with entity being "agent", session being 20, tick being 2),
+        parent_id being 2, entity being "another", session being 50, operations being 1,
+        expires being 60, work_limit being 10, result_limit being 2
+    expect new_child.code equals "denied"
+    value other_read is registry.authorize with caller being (test_context with entity being "other", session being 40, tick being 2),
+        grant_id being 4, scope being "scope", operation being 1
+    expect other_read.code equals "ok"
+end test
+
+note suite "enigma.authority"
+copied_handle_does_not_delegate_or_revoke_another_holder begin test
+    value registry is open_authority with nothing
+    value root_grant is registry.install with entity being "owner", session being 10, scope being "scope", operations being 15,
+        expires being 100, work_limit being 40, result_limit being 10, tick being 0
+    expect root_grant.code equals "ok"
+    value copied_delegation is registry.delegate with caller being (test_context with entity being "imposter", session being 10, tick being 1),
+        parent_id being 1, entity being "agent", session being 20, operations being 1,
+        expires being 50, work_limit being 20, result_limit being 5
+    expect copied_delegation.code equals "denied"
+    value copied_revoke is registry.revoke with caller being (test_context with entity being "owner", session being 11, tick being 1), grant_id being 1
+    expect copied_revoke.code equals "denied"
+    value still_live is registry.authorize with caller being (test_context with entity being "owner", session being 10, tick being 1),
+        grant_id being 1, scope being "scope", operation being 1
+    expect still_live.code equals "ok"
+end test
+
+note suite "enigma.authority"
+unknown_handles_and_malformed_callers_return_metadata_free_denial begin test
+    value registry is open_authority with nothing
+    value root_grant is registry.install with entity being "owner", session being 1, scope being "scope", operations being 15,
+        expires being 100, work_limit being 40, result_limit being 10, tick being 0
+    expect root_grant.code equals "ok"
+    value unknown is registry.authorize with caller being (test_context with entity being "owner", session being 1, tick being 1),
+        grant_id being 900, scope being "scope", operation being 1
+    expect unknown.code equals "denied"
+    expect unknown.entity equals ""
+    expect unknown.work_limit equals 0
+    expect unknown.result_limit equals 0
+    value negative_handle is registry.authorize with caller being (test_context with entity being "owner", session being 1, tick being 1),
+        grant_id being minus 1, scope being "scope", operation being 1
+    expect negative_handle.code equals "denied"
+    value no_entity is registry.authorize with caller being (test_context with entity being "", session being 1, tick being 1),
+        grant_id being 1, scope being "scope", operation being 1
+    expect no_entity.code equals "denied"
+    value no_session is registry.authorize with caller being (test_context with entity being "owner", session being 0, tick being 1),
+        grant_id being 1, scope being "scope", operation being 1
+    expect no_session.code equals "denied"
+    value unknown_revoke is registry.revoke with caller being (test_context with entity being "owner", session being 1, tick being 1), grant_id being 900
+    expect unknown_revoke.code equals "denied"
+    expect unknown_revoke.grant_id equals 0
+    value unknown_delegate is registry.delegate with caller being (test_context with entity being "owner", session being 1, tick being 1),
+        parent_id being 900, entity being "agent", session being 2, operations being 1,
+        expires being 50, work_limit being 20, result_limit being 5
+    expect unknown_delegate.code equals "denied"
+    expect unknown_delegate.grant_id equals 0
+end test
+
+note suite "enigma.authority"
+wrong_audience_does_not_advance_trusted_clock begin test
+    value registry is open_authority with nothing
+    value root_grant is registry.install with entity being "owner", session being 1, scope being "scope", operations being 1,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 1
+    expect root_grant.code equals "ok"
+    value wrong is registry.authorize with caller being (build access_context with entity being "owner", session being 1, audience being "other", tick being 999),
+        grant_id being 1, scope being "scope", operation being 1
+    expect wrong.code equals "denied"
+    value good is registry.authorize with caller being (test_context with entity being "owner", session being 1, tick being 2),
+        grant_id being 1, scope being "scope", operation being 1
+    expect good.code equals "ok"
+end test
+
+note suite "enigma.authority"
+grant_capacity_fails_without_id_reuse begin test
+    value registry is open_authority with nothing
+    repeat for index from 0 to 256
+        value installed is registry.install with entity being "owner", session being 1, scope being "scope", operations being 9,
+            expires being 100, work_limit being 20, result_limit being 5, tick being 0
+        expect installed.code equals "ok"
+        expect installed.grant_id equals index plus 1
+    end repeat
+    value full is registry.install with entity being "owner", session being 1, scope being "scope", operations being 9,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect full.code equals "invalid"
+    expect full.grant_id equals 0
+    value delegated is registry.delegate with caller being (test_context with entity being "owner", session being 1, tick being 0),
+        parent_id being 1, entity being "agent", session being 2, operations being 1,
+        expires being 50, work_limit being 10, result_limit being 2
+    expect delegated.code equals "denied"
+    value last_grant is registry.authorize with caller being (test_context with entity being "owner", session being 1, tick being 0),
+        grant_id being 256, scope being "scope", operation being 1
+    expect last_grant.code equals "ok"
+end test
+
+note suite "enigma.authority"
+identity_and_scope_length_limits_are_bounded begin test
+    value registry is open_authority with nothing
+    variable maximum as text is ""
+    repeat for index from 0 to 128
+        set maximum to maximum plus "x"
+    end repeat
+    value too_long is registry.install with entity being maximum plus "x", session being 1, scope being "scope", operations being 1,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect too_long.code equals "invalid"
+    value long_scope is registry.install with entity being "owner", session being 1, scope being maximum plus "x", operations being 1,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect long_scope.code equals "invalid"
+    value maximum_grant is registry.install with entity being maximum, session being 1, scope being maximum, operations being 1,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect maximum_grant.code equals "ok"
+    expect maximum_grant.grant_id equals 1
+    value authorized is registry.authorize with caller being (test_context with entity being maximum, session being 1, tick being 0),
+        grant_id being 1, scope being maximum, operation being 1
+    expect authorized.code equals "ok"
+end test

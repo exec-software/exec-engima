@@ -3,6 +3,7 @@ book enigma.app
 read arg_count, arg from nil.std.system
 read write_error from nil.std.io
 read banner, help_text, request_kind from enigma.core
+read run_demo, show_surface from enigma.demo
 
 main returns override integer begin paragraph
     value count as override long is arg_count with nothing
@@ -19,6 +20,11 @@ main returns override integer begin paragraph
         when "version" then
             say banner with nothing
             give 0
+        when "surface" then
+            evaluate show_surface with nothing
+            give 0
+        when "demo" then
+            give run_demo with nothing
         otherwise
             evaluate write_error with s being "Enigma: unsupported arguments. Use --help." plus newline
             give 2

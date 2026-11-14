@@ -1,0 +1,73 @@
+# Enigma client for Matrix
+
+An in-process companion library above the Enigma engine. It lives in `ext/`,
+outside `nil.std`, so it can become a separately distributed package later.
+The current namespace is `enigma.client`; there is no package-manager integration
+or stable release compatibility promise yet.
+
+## Why this surface
+
+Agents should not have to synthesize query strings to record and investigate
+evidence. The client accepts typed propositions and returns typed receipts,
+resolution state, completeness, and evidence IDs. Supporting and opposing
+evidence coexist; neither silently overwrites the other.
+
+Use `describe_surface with nothing` to discover protocol `enigma.evidence.v1`,
+the operation list, current hard limits, and the absence of persistence. This
+describes the protocol, not the permissions held by a particular grant. Text
+limits use the engine's Matrix text-length operation. Each call returns a fresh
+description, including a fresh operation array.
+
+| Operation | Meaning |
+| --- | --- |
+| `support` | Record attributable support for a proposition. |
+| `oppose` | Record attributable opposition to the same proposition. |
+| `resolve` | Inspect visible evidence at an explicit revision and work/output budgets. |
+| `inspect` | Retrieve one evidence item at an explicit revision. |
+| `withdraw` | Withdraw evidence through the engine's ownership and revision checks. |
+
+The client forwards exact revision and budget arguments. It does not retry
+writes, silently increase limits, choose a truth winner, or turn a partial
+answer into a complete one. `minus 1` requests the latest revision or disables
+a write revision precondition; `0` remains the real empty historical snapshot.
+
+## Host setup and trust
+
+The embedding host opens an engine and authority registry, installs fixture or
+application grants, establishes an access context, and calls `connect`. The
+client copies context fields at connection time and keeps the live authority
+registry shared so later revocation remains effective. The client defines no
+grant-installation method; the underlying registry remains host-only.
+
+Contexts are snapshots. For each synchronous dispatch, the trusted host must
+establish the current identity/session and current monotonic tick, then call
+`connect` again with that fresh context. Reconnecting does not mint or extend a
+grant. Do not treat a client holding a fixed old tick as a live clock. Copying
+the context prevents accidental alias mutation; it does not authenticate its
+contents or establish clock freshness. The example deliberately uses one fixed
+tick in a short synthetic fixture.
+
+This is an API for trusted embedding code, not isolation against hostile code
+in the process. Matrix class fields are currently public. The host is responsible
+for authenticated identity, a trustworthy clock, grant provisioning, and protecting
+handles. There is no network authentication, encryption, or persistent storage.
+See the root [security policy](../../SECURITY.md).
+
+## Run the example and tests
+
+From the repository root, select a complete NIL SDK:
+
+```sh
+export NIL_SDK=/absolute/path/to/exec-nil-framework/sdk
+export NIL_STRICT_BOUNDS=1
+"$NIL_SDK/nilbuild" run --project ext/enigma-client/nil.project.nildata --sdk "$NIL_SDK"
+"$NIL_SDK/nilbuild" test --project ext/enigma-client/nil.project.nildata --sdk "$NIL_SDK" --target all
+```
+
+The example uses synthetic data and explicitly installed host fixture grants.
+It demonstrates contradiction, a historical snapshot after withdrawal, and a
+bounded incomplete query. Process exit discards all data.
+
+For direct imports, add `ext/enigma-client/src` and the engine's `src` directory
+to your project's `includePaths`. The client depends on the engine's public
+Matrix books; it is not copied into the framework's core standard library.

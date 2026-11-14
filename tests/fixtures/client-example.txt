@@ -1,0 +1,7 @@
+enigma.evidence.v1
+With both sources: contested
+After withdrawal: supported
+At the earlier revision: contested
+Bounded query complete:
+0
+All evidence and grants in this example disappear at process exit.

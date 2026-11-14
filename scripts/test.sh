@@ -18,8 +18,12 @@ case "$target" in
 esac
 
 "$script_directory/nil.sh" check
+"$enigma_sdk_directory/nilbuild" check \
+    --project "$enigma_project_root/ext/enigma-client/nil.project.nildata" --sdk "$enigma_sdk_directory"
 "$script_directory/nil.sh" test --target "$target"
 "$script_directory/nil.sh" build --target "$target"
+"$enigma_sdk_directory/nilbuild" build \
+    --project "$enigma_project_root/ext/enigma-client/nil.project.nildata" --sdk "$enigma_sdk_directory" --target "$target"
 
 test_directory="$(mktemp -d "${TMPDIR:-/tmp}/enigma-cli.XXXXXXXX")"
 trap 'rm -rf -- "$test_directory"' EXIT
@@ -50,7 +54,7 @@ check_case() {
         help)
             [[ ! -s "$test_directory/stderr" ]] || fail_case "$label stderr"
             [[ "$(< "$test_directory/stdout")" == *"Usage: enigma "* ]] || fail_case "$label usage"
-            [[ "$(< "$test_directory/stdout")" == *"No database storage is implemented."* ]] || fail_case "$label seed status"
+            [[ "$(< "$test_directory/stdout")" == *"No persistence or native isolation."* ]] || fail_case "$label trust boundary"
             if [[ -e "$test_directory/help" ]]; then
                 cmp -s "$test_directory/stdout" "$test_directory/help" || fail_case "$label output"
             else
@@ -65,6 +69,14 @@ check_case() {
             [[ ! -s "$test_directory/stdout" ]] || fail_case "$label stdout"
             cmp -s "$test_directory/stderr" "$test_directory/error" || fail_case "$label diagnostic or input disclosure"
             ;;
+        demo|surface|client-example)
+            [[ ! -s "$test_directory/stderr" ]] || fail_case "$label stderr"
+            local fixture_suffix="txt"
+            if [[ "$output_kind" == "surface" ]]; then
+                fixture_suffix="nildata"
+            fi
+            cmp -s "$test_directory/stdout" "$enigma_project_root/tests/fixtures/$output_kind.$fixture_suffix" || fail_case "$label contract"
+            ;;
     esac
 }
 
@@ -78,9 +90,20 @@ for route in "${routes[@]}"; do
     check_case help 0 help --help
     check_case short-help 0 help -h
     check_case version 0 version --version
+    check_case surface 0 surface --surface
+    check_case demo 0 demo --demo
     check_case unknown 2 error 'synthetic-secret-do-not-echo'
     check_case empty 2 error ''
     check_case excess-help 2 error --help extra
     check_case excess-version 2 error --version extra
-    printf 'PASS CLI %s: 8 cases\n' "$route"
+    check_case excess-demo 2 error --demo extra
+    check_case excess-surface 2 error --surface extra
+    printf 'PASS CLI %s: 12 cases\n' "$route"
+    if [[ "$route" == "vm" ]]; then
+        route_command=("$enigma_sdk_directory/nilinterpreter" "$enigma_project_root/ext/enigma-client/build/enigma-client-example.nil")
+    else
+        route_command=("$enigma_project_root/ext/enigma-client/build/enigma-client-example")
+    fi
+    check_case client-example 0 client-example
+    printf 'PASS package example %s\n' "$route"
 done

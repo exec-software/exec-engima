@@ -1,63 +1,80 @@
-# Enigma design seed
+# Enigma design
 
-Status: proposed direction except for the bootstrap described below.
+Enigma tests an evidence-oriented database model for people and agents. The
+working first slice preserves competing reports, their provenance, and the
+historical view before a withdrawal. It does not commit the engine to relational
+tables, document collections, or an existing SQL/NoSQL category.
 
-## Purpose
+The benefit to evaluate is concrete: an agent can retain disagreement, inspect
+what supports an answer, and distinguish an incomplete investigation from an
+absence of evidence. This is a design hypothesis, not a claim that evidence or
+temporal database concepts are new.
 
-Build a database engine in Matrix whose operations are readable to people and
-precise enough for agents to construct, inspect, and constrain. Enigma should
-make data access authority explicit and keep sensitive data out of incidental
-outputs. Novelty must come from useful behavior that can be demonstrated.
+## Implemented slice
 
-## What exists
+[ENI-0001: Evidence views under explicit authority](ENI-0001-evidence-and-authority.md)
+defines the executable contract.
 
-The only executable behavior is help, version reporting, and argument rejection.
-There is no database and no data-access security boundary yet. The module layout
-leaves room for a parser, planner, policy layer, executor, and storage components;
-those components have not been implemented or selected.
+| Area | Current behavior |
+| --- | --- |
+| Evidence | Exact text propositions with independently attributable support and opposition. |
+| History | Assertions and withdrawals append events; as-of reads preserve prior views. |
+| Resolution | `unknown`, `supported`, `contradicted`, or `contested` after a complete scan; `incomplete` when work runs out. |
+| Bounds | 128 events per store, explicit work/output limits, and separate evidence-list completeness. |
+| Authority | Trusted-host entity/session grants with exact audience, scope, rights, logical expiry, attenuation, and live ancestor revocation. |
+| Client | Typed operations and a discoverable surface under [`ext/enigma-client`](../../ext/enigma-client/README.md), outside `nil.std`. |
 
-## Decisions for the seed
+Each store has independent IDs, revisions, capacity, and work budgets. A failed
+write does not advance its revision. Current authority is required even for an
+old snapshot. Withdrawal and inspection honor grant work limits and return a
+structured `limit` response when the required scan is too large.
 
-- Matrix is the implementation language; NILData configures the NIL project.
-- Query syntax will draw from Matrix. Enigma queries remain a separate language
-  with a separately specified grammar and semantics.
-- Human tools and agent tools should share the same checked execution path.
-- Database operations must eventually carry explicit identity and access scope.
-- Security and correctness claims require evidence before they become guarantees.
+The implementation is Matrix, configured through NILData. The canonical surface
+is the typed evidence operation model. No text query parser, inference system,
+causal dependency model, persistence, network transport, or cryptography exists.
 
-## Candidate differentiators
+## Authority direction
 
-These are ideas to evaluate, not a promised feature set:
+Follow Anomalous's separation of entity identity, admitted session, and scoped
+sigil authority, as described in its [identity and authority design](https://github.com/exec-software/exec-anomalous/blob/87e365dadac72a481b03cfe175b06e0129dc6c1d/docs/architecture/identity-and-authority.md)
+and [ADR 0040](https://github.com/exec-software/exec-anomalous/blob/87e365dadac72a481b03cfe175b06e0129dc6c1d/docs/adr/0040-separate-entity-identity-authentication-and-authority.md).
+Human and agent requests share the same operation and policy path. An entity
+name, an asserted purpose, or an administrator label cannot grant authority.
 
-- An inspectable operation plan showing requested access before execution.
-- Agent delegation restricted by data scope, operation, purpose, and lifetime.
-- Structured provenance and redacted audit events for human and agent activity.
-- Bounded execution with explicit limits on work, output, and time.
+The working registry uses trusted-host fixture grants and supplied logical
+ticks. It does not authenticate entities or obtain native task/channel/session
+provenance. The host must establish fresh context for each dispatch; a copied
+client context is not a live clock. Matrix class fields are public, so direct
+same-process memory access is outside the API policy boundary. There is no
+hostile-process isolation, realtime-expiry guarantee, persistent security state,
+or durable revocation. See the [security policy](../../SECURITY.md).
 
-An explanation or an agent's stated purpose is never itself authorization.
-Enforcement must come from authenticated authority and checked policy.
+Grant IDs, evidence IDs, and revisions identify state only within their live
+registry/store instances. Replacement or restart can reuse numbers; issuer/store
+epochs and retained replay state do not exist yet. Old numeric IDs and client
+contexts must not be reused as authority under replacement instances.
 
-## First milestones
+## Next questions and milestones
 
-1. **Language contract:** define an initial data model, a narrow query grammar,
-   typed bindings, structured results, and error behavior. Add acceptance fixtures
-   and parser limits before implementing the parser.
-2. **In-memory vertical slice:** create a collection, insert a typed record, and
-   read a projection through one checked execution path. Use synthetic data.
-3. **Access boundary:** model identities and delegated authority; deny missing
-   authority and test cross-scope access, invalid delegation, and redaction.
-   Introduce no external access before this boundary is enforceable.
-4. **Persistence and recovery:** specify file format, transactions, crash behavior,
-   corruption handling, backup/restore, and migration. Prove the chosen guarantees
-   through restart, fault, and recovery tests.
-5. **Interfaces and evaluation:** add human and agent transports through the same
-   access boundary. Measure workloads and compare results with reproducible baselines.
+1. **Native authority integration:** consume verified Anomalous admission and
+   installed sigils through an explicit adapter. Define request/effect binding,
+   replay handling, fresh session incarnations, and the trusted clock boundary.
+2. **Richer evidence semantics:** evaluate typed values, causal dependencies,
+   derived conclusions, and changes that invalidate them. Define how authority
+   and provenance propagate before exposing cross-scope reasoning.
+3. **Durable state:** specify the event format, transactions, corruption and crash
+   behavior, restart epochs, revocation recovery, migrations, and backup/restore.
+   Prove guarantees through fault and recovery tests before claiming them.
+4. **Human language surface:** design bounded Matrix-inspired syntax that compiles
+   into the same typed operations and authority checks. A parser must not execute
+   arbitrary Matrix or grant authority from text.
+5. **Evaluation:** measure workloads involving competing evidence, corrections,
+   historical explanations, and constrained agent activity. Compare usefulness,
+   correctness, and cost with reproducible baselines.
 
-## Open decisions
+Package-manager distribution of the client is deferred. Storage layout,
+concurrency, indexes, transport encoding, cryptographic dependencies, and
+compatibility policy remain open. Choose those mechanisms to support useful,
+testable behavior; do not infer them from an architectural label.
 
-Record model, query semantics, storage layout, concurrency model, transaction
-isolation, index design, cryptographic dependencies, key lifecycle, deployment
-model, and compatibility policy are all open. Do not infer those choices from
-the Enigma name or from illustrative syntax.
-
-See [query direction](query-language.md) and the [security model](../../SECURITY.md).
+See [query surface direction](query-language.md) for the shared operation model.

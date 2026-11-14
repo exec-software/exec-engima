@@ -9,15 +9,17 @@ public banner returns text begin paragraph
 end paragraph
 
 public status returns text begin paragraph
-    give "Research seed. No database storage is implemented."
+    give "In-memory evidence engine. No persistence or native isolation."
 end paragraph
 
 public help_text returns text begin paragraph
     give (banner with nothing) plus newline plus
         (status with nothing) plus newline plus newline plus
-        "Usage: enigma [--help|-h|--version]" plus newline plus
+        "Usage: enigma [--help|-h|--version|--surface|--demo]" plus newline plus
         "  --help, -h   Show this help" plus newline plus
-        "  --version    Show the version" plus newline plus newline plus
+        "  --version    Show the version" plus newline plus
+        "  --surface    Describe the typed client surface as NILData" plus newline plus
+        "  --demo       Run a synthetic evidence and revocation example" plus newline plus newline plus
         "Enigma is a Matrix database engine project for humans and AI."
 end paragraph
 
@@ -35,6 +37,12 @@ public request_kind receives argument_count as override long, first_argument as 
     end when
     when first_argument equals "--version" then
         give "version"
+    end when
+    when first_argument equals "--surface" then
+        give "surface"
+    end when
+    when first_argument equals "--demo" then
+        give "demo"
     end when
     give "invalid"
 end paragraph
@@ -71,4 +79,11 @@ end test
 note suite "enigma.cli"
 invalid_argument_counts_are_rejected begin test
     expect (request_kind with argument_count being minus 1, first_argument being "--help") equals "invalid"
+end test
+
+note suite "enigma.cli"
+surface_and_demo_are_explicit_operations begin test
+    expect (request_kind with argument_count being 1, first_argument being "--surface") equals "surface"
+    expect (request_kind with argument_count being 1, first_argument being "--demo") equals "demo"
+    expect (request_kind with argument_count being 2, first_argument being "--demo") equals "invalid"
 end test

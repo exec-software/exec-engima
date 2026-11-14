@@ -5,6 +5,7 @@ object
   entry is "src/main.matrix"
   includePaths is an array
     item is "src"
+    item is "ext/enigma-client/src"
   end array
   outputDirectory is "build"
   analysis is an object

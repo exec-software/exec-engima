@@ -1,0 +1,7 @@
+Enigma evidence demo (synthetic, in memory)
+initial: supported
+after opposition: contested
+after withdrawal: supported
+historical revision 2: contested
+budget 1: incomplete
+after revocation: denied
