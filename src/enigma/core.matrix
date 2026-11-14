@@ -1,0 +1,74 @@
+book enigma.core
+
+public version returns text begin paragraph
+    give "0.1.0-dev"
+end paragraph
+
+public banner returns text begin paragraph
+    give "Enigma " plus (version with nothing)
+end paragraph
+
+public status returns text begin paragraph
+    give "Research seed. No database storage is implemented."
+end paragraph
+
+public help_text returns text begin paragraph
+    give (banner with nothing) plus newline plus
+        (status with nothing) plus newline plus newline plus
+        "Usage: enigma [--help|-h|--version]" plus newline plus
+        "  --help, -h   Show this help" plus newline plus
+        "  --version    Show the version" plus newline plus newline plus
+        "Enigma is a Matrix database engine project for humans and AI."
+end paragraph
+
+!!! Interpret only the explicitly supported seed options. Reject extra arguments
+!!! before considering the first one; input text is never used in diagnostics.
+public request_kind receives argument_count as override long, first_argument as text returns text begin paragraph
+    when argument_count equals 0 then
+        give "help"
+    end when
+    when argument_count does not equal 1 then
+        give "invalid"
+    end when
+    when first_argument equals "--help" or first_argument equals "-h" then
+        give "help"
+    end when
+    when first_argument equals "--version" then
+        give "version"
+    end when
+    give "invalid"
+end paragraph
+
+note suite "enigma.cli"
+default_request_shows_help begin test
+    expect (request_kind with argument_count being 0, first_argument being "") equals "help"
+end test
+
+note suite "enigma.cli"
+help_options_are_supported begin test
+    expect (request_kind with argument_count being 1, first_argument being "--help") equals "help"
+    expect (request_kind with argument_count being 1, first_argument being "-h") equals "help"
+end test
+
+note suite "enigma.cli"
+version_option_is_supported begin test
+    expect (request_kind with argument_count being 1, first_argument being "--version") equals "version"
+    expect (banner with nothing) equals "Enigma 0.1.0-dev"
+end test
+
+note suite "enigma.cli"
+unknown_and_empty_options_are_rejected begin test
+    expect (request_kind with argument_count being 1, first_argument being "open") equals "invalid"
+    expect (request_kind with argument_count being 1, first_argument being "") equals "invalid"
+end test
+
+note suite "enigma.cli"
+excess_arguments_are_rejected begin test
+    expect (request_kind with argument_count being 2, first_argument being "--help") equals "invalid"
+    expect (request_kind with argument_count being 2, first_argument being "--version") equals "invalid"
+end test
+
+note suite "enigma.cli"
+invalid_argument_counts_are_rejected begin test
+    expect (request_kind with argument_count being minus 1, first_argument being "--help") equals "invalid"
+end test

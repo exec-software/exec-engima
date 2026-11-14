@@ -1,0 +1,33 @@
+# Generated programs and SDKs
+/build/
+/.sdk
+/.sdk/
+/nil-framework/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+
+# Local data, credentials and diagnostics
+/data/
+/backups/
+/secrets/
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.wal
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

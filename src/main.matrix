@@ -1,0 +1,26 @@
+book enigma.app
+
+read arg_count, arg from nil.std.system
+read write_error from nil.std.io
+read banner, help_text, request_kind from enigma.core
+
+main returns override integer begin paragraph
+    value count as override long is arg_count with nothing
+    variable first as text is ""
+    when count equals 1 then
+        set first to arg with index being 0
+    end when
+
+    value requested is request_kind with argument_count being count, first_argument being first
+    consider requested
+        when "help" then
+            say help_text with nothing
+            give 0
+        when "version" then
+            say banner with nothing
+            give 0
+        otherwise
+            evaluate write_error with s being "Enigma: unsupported arguments. Use --help." plus newline
+            give 2
+    end consider
+end paragraph
