@@ -578,3 +578,229 @@ main returns override integer begin paragraph
     end when
     give fail with code being "invalid_arguments"
 end paragraph
+
+note if_test_mode
+sample_id returns text begin paragraph
+    give "0123456789abcdef0123456789abcdef"
+end paragraph
+
+note if_test_mode
+other_id returns text begin paragraph
+    give "fedcba9876543210fedcba9876543210"
+end paragraph
+
+note if_test_mode
+built_payload receives database_id as text, incarnation as text, generation as number returns text begin paragraph
+    variable root is (new_object with nothing).unwrap with nothing
+    set root to (object_set with root, "database_id", (string_value with database_id).unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "incarnation", (string_value with incarnation).unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "generation",
+        (integer_value with (formatted "{generation}")).unwrap with nothing).unwrap with nothing
+    give (to_json with root).unwrap with nothing
+end paragraph
+
+note if_test_mode
+built_receipt receives code as text, instance as text, generation as number,
+    database_id as text, with_database as boolean returns `Value` begin paragraph
+    variable root is (new_object with nothing).unwrap with nothing
+    set root to (object_set with root, "code", (string_value with code).unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "instance", (string_value with instance).unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "generation",
+        (integer_value with (formatted "{generation}")).unwrap with nothing).unwrap with nothing
+    when with_database then
+        set root to (object_set with root, "database_id",
+            (string_value with database_id).unwrap with nothing).unwrap with nothing
+    end when
+    give root
+end paragraph
+
+note suite "enigma.host.candidate"
+a_matching_create_candidate_is_accepted begin test
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value candidate is built_payload with database_id being identity, incarnation being incarnation, generation being 0
+    value receipt is built_receipt with code being "created", instance being incarnation,
+        generation being 0, database_id being identity, with_database being yes
+    expect (check_candidate with mode being "create", committed being "", candidate being candidate,
+        receipt being receipt, database_id being identity, incarnation being incarnation) equals "ok"
+end test
+
+note suite "enigma.host.candidate"
+a_receipt_naming_another_instance_is_refused begin test
+    !!! The Python host caught this by corrupting a worker reply from outside.
+    !!! The check lives here now, so the case does too.
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value candidate is built_payload with database_id being identity, incarnation being incarnation, generation being 0
+    value receipt is built_receipt with code being "created", instance being "00000000000000000000000000000000",
+        generation being 0, database_id being identity, with_database being yes
+    expect (check_candidate with mode being "create", committed being "", candidate being candidate,
+        receipt being receipt, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+end test
+
+note suite "enigma.host.candidate"
+a_candidate_for_another_database_or_incarnation_is_refused begin test
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value wrong_database is built_payload with database_id being incarnation, incarnation being incarnation, generation being 0
+    value receipt is built_receipt with code being "created", instance being incarnation,
+        generation being 0, database_id being identity, with_database being yes
+    expect (check_candidate with mode being "create", committed being "", candidate being wrong_database,
+        receipt being receipt, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    value wrong_incarnation is built_payload with database_id being identity, incarnation being identity, generation being 0
+    expect (check_candidate with mode being "create", committed being "", candidate being wrong_incarnation,
+        receipt being receipt, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+end test
+
+note suite "enigma.host.candidate"
+a_generation_that_does_not_follow_the_committed_one_is_refused begin test
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value committed is built_payload with database_id being identity, incarnation being incarnation, generation being 4
+    value receipt is built_receipt with code being "ok", instance being incarnation,
+        generation being 5, database_id being identity, with_database being yes
+    value follows is built_payload with database_id being identity, incarnation being incarnation, generation being 5
+    expect (check_candidate with mode being "apply", committed being committed, candidate being follows,
+        receipt being receipt, database_id being identity, incarnation being incarnation) equals "ok"
+    !!! A skipped generation would let a lost commit pass unnoticed.
+    value skips is built_payload with database_id being identity, incarnation being incarnation, generation being 6
+    value skipping_receipt is built_receipt with code being "ok", instance being incarnation,
+        generation being 6, database_id being identity, with_database being yes
+    expect (check_candidate with mode being "apply", committed being committed, candidate being skips,
+        receipt being skipping_receipt, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    !!! Nor may it stand still while claiming to have advanced.
+    value stalls is built_payload with database_id being identity, incarnation being incarnation, generation being 4
+    expect (check_candidate with mode being "apply", committed being committed, candidate being stalls,
+        receipt being receipt, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+end test
+
+note suite "enigma.host.candidate"
+an_unchanged_denial_must_carry_no_metadata begin test
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value committed is built_payload with database_id being identity, incarnation being incarnation, generation being 2
+    value clean is built_receipt with code being "denied", instance being "", generation being 0,
+        database_id being identity, with_database being no
+    expect (check_candidate with mode being "apply", committed being committed, candidate being committed,
+        receipt being clean, database_id being identity, incarnation being incarnation) equals "ok"
+    !!! A denial that names an instance or a generation is claiming an effect
+    !!! it did not have.
+    value boastful is built_receipt with code being "denied", instance being incarnation, generation being 0,
+        database_id being identity, with_database being no
+    expect (check_candidate with mode being "apply", committed being committed, candidate being committed,
+        receipt being boastful, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    value extra is built_receipt with code being "denied", instance being "", generation being 0,
+        database_id being identity, with_database being yes
+    expect (check_candidate with mode being "apply", committed being committed, candidate being committed,
+        receipt being extra, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    !!! An unchanged payload with a success code is a contradiction.
+    value claiming is built_receipt with code being "ok", instance being "", generation being 0,
+        database_id being identity, with_database being no
+    expect (check_candidate with mode being "apply", committed being committed, candidate being committed,
+        receipt being claiming, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+end test
+
+note suite "enigma.host.candidate"
+a_denial_that_changed_state_still_advances_a_generation begin test
+    !!! Authorization can move the clock floor, so a denial may legitimately
+    !!! change the payload. Its receipt stays metadata free, and the candidate
+    !!! must still be the next generation.
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value committed is built_payload with database_id being identity, incarnation being incarnation, generation being 2
+    value changed is built_payload with database_id being identity, incarnation being incarnation, generation being 3
+    value clean is built_receipt with code being "denied", instance being "", generation being 0,
+        database_id being identity, with_database being no
+    expect (check_candidate with mode being "apply", committed being committed, candidate being changed,
+        receipt being clean, database_id being identity, incarnation being incarnation) equals "ok"
+end test
+
+note suite "enigma.host.candidate"
+a_refusal_may_not_leak_a_database_id_and_an_unknown_code_is_refused begin test
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value committed is built_payload with database_id being identity, incarnation being incarnation, generation being 1
+    value changed is built_payload with database_id being identity, incarnation being incarnation, generation being 2
+    value leaking is built_receipt with code being "limit", instance being "", generation being 0,
+        database_id being identity, with_database being yes
+    expect (check_candidate with mode being "apply", committed being committed, candidate being changed,
+        receipt being leaking, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    value unknown is built_receipt with code being "elsewhere", instance being "", generation being 0,
+        database_id being identity, with_database being no
+    expect (check_candidate with mode being "apply", committed being committed, candidate being changed,
+        receipt being unknown, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+end test
+
+note suite "enigma.host.candidate"
+a_create_reports_created_and_a_recovery_reports_ready begin test
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value first is built_payload with database_id being identity, incarnation being incarnation, generation being 0
+    value ready is built_receipt with code being "ready", instance being incarnation,
+        generation being 0, database_id being identity, with_database being yes
+    !!! A creation that reports readiness, or a recovery that reports creation,
+    !!! is not the transition the host asked for.
+    expect (check_candidate with mode being "create", committed being "", candidate being first,
+        receipt being ready, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    value committed is built_payload with database_id being identity, incarnation being identity, generation being 7
+    value next_payload is built_payload with database_id being identity, incarnation being incarnation, generation being 8
+    value created is built_receipt with code being "created", instance being incarnation,
+        generation being 8, database_id being identity, with_database being yes
+    expect (check_candidate with mode being "recover", committed being committed, candidate being next_payload,
+        receipt being created, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    value ready_now is built_receipt with code being "ready", instance being incarnation,
+        generation being 8, database_id being identity, with_database being yes
+    expect (check_candidate with mode being "recover", committed being committed, candidate being next_payload,
+        receipt being ready_now, database_id being identity, incarnation being incarnation) equals "ok"
+end test
+
+note suite "enigma.host.candidate"
+payload_metadata_requires_hex_identities_and_a_bounded_generation begin test
+    value identity is sample_id with nothing
+    value good is payload_metadata with payload being
+        (built_payload with database_id being identity, incarnation being identity, generation being 3)
+    expect good.ok
+    expect good.generation equals 3
+    expect (payload_metadata with payload being "").ok equals no
+    expect (payload_metadata with payload being "[]").ok equals no
+    !!! An identifier that is not 32 lowercase hex characters is not one the
+    !!! host issued, so it is never adopted.
+    expect (payload_metadata with payload being
+        (built_payload with database_id being "short", incarnation being identity, generation being 0)).ok equals no
+    expect (payload_metadata with payload being
+        (built_payload with database_id being identity, incarnation being "0123456789ABCDEF0123456789ABCDEF",
+            generation being 0)).ok equals no
+    expect (payload_metadata with payload being
+        (built_payload with database_id being identity, incarnation being identity, generation being minus 1)).ok equals no
+end test
+
+note suite "enigma.host.candidate"
+payload_metadata_rejects_duplicate_members_and_deep_nesting begin test
+    !!! The Python host needed an explicit strict-JSON pass for these, because
+    !!! Python's decoder accepts a repeated member and keeps the last one.
+    !!! NILData rejects it outright, so the host inherits the rejection rather
+    !!! than reimplementing it; this records that it actually holds.
+    value identity is sample_id with nothing
+    value duplicated is "{" plus quote plus "database_id" plus quote plus ":" plus quote plus identity plus quote
+        plus "," plus quote plus "database_id" plus quote plus ":" plus quote plus identity plus quote
+        plus "," plus quote plus "incarnation" plus quote plus ":" plus quote plus identity plus quote
+        plus "," plus quote plus "generation" plus quote plus ":0}"
+    expect (payload_metadata with payload being duplicated).ok equals no
+    !!! A nesting bound keeps a decoder from being driven into deep recursion.
+    variable deep as text is ""
+    repeat for index from 0 to 40
+        set deep to deep plus "["
+    end repeat
+    repeat for index from 0 to 40
+        set deep to deep plus "]"
+    end repeat
+    expect (payload_metadata with payload being deep).ok equals no
+    !!! A payload missing an identity field, or carrying a non-numeric
+    !!! generation, is not a state this host issued.
+    value missing is "{" plus quote plus "database_id" plus quote plus ":" plus quote plus identity plus quote plus "}"
+    expect (payload_metadata with payload being missing).ok equals no
+    value lettered is "{" plus quote plus "database_id" plus quote plus ":" plus quote plus identity plus quote
+        plus "," plus quote plus "incarnation" plus quote plus ":" plus quote plus identity plus quote
+        plus "," plus quote plus "generation" plus quote plus ":" plus quote plus "3" plus quote plus "}"
+    expect (payload_metadata with payload being lettered).ok equals no
+end test

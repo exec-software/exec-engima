@@ -29,6 +29,13 @@ esac
 "$enigma_sdk_directory/nilbuild" build \
     --project "$enigma_project_root/host/nil.project.nildata" --sdk "$enigma_sdk_directory" \
     --target "$target"
+# Candidate validation and payload identity are Matrix logic now, so they are
+# tested in Matrix beside the implementation rather than from a Python seam.
+"$enigma_sdk_directory/nilbuild" test \
+    --project "$enigma_project_root/host/nil.project.nildata" --sdk "$enigma_sdk_directory" \
+    --target "$target" --filter enigma.host > /dev/null
+printf 'PASS matrix host logic %s\n' "$target"
+
 # The worker is still built, because the Python host spawns it and the
 # comparison run below has to exercise the path that is still qualified.
 "$script_directory/build-storage.sh" --target "$target"

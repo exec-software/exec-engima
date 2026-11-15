@@ -21,9 +21,19 @@ exercise it with a matching development SDK:
 NIL_SDK=/absolute/path/to/matching/development-sdk ./scripts/test-matrix-host.sh
 ```
 
-That script runs the black-box session contract against this host on both
-routes, runs it again against `scripts/store.py`, and checks that either host
-can serve a database the other created.
+That script runs this host's own Matrix checks, the black-box session contract
+against it on both routes, the storage-fault contract, the same two contracts
+against `scripts/store.py`, and a check that either host can serve a database
+the other created.
+
+Candidate validation and payload identity are tested in Matrix, in the
+`enigma.host.candidate` suite beside the code they exercise, because that logic
+moved here when the worker process went away. What stays in Python is the
+external-oracle layer: real restarts and `SIGKILL`, lock contention, injected
+storage faults, and byte-identity against the other encoder. A program cannot
+witness its own death, and it cannot be the only witness to whether its bytes
+reached the disk. [ENI-0003](../docs/design/ENI-0003-matrix-durable-host.md)
+records the full division.
 
 ## What the collapse changed
 

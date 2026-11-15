@@ -199,12 +199,38 @@ the program under test. `validation/nil-io` already works this way, with an
 independent host oracle over a real Matrix payload.
 
 So the Python *host* is a placeholder to retire, and the Python *tests* are an
-oracle to keep. The 28 durability and recovery tests are the specification of
-this slice's behavior; they are the instrument that makes the port checkable and
-should outlive `store.py`. Replacing them with Matrix self-checks would reduce
-evidence while appearing to complete the migration. Eventually some become
-Matrix route tests, but an independent oracle for filesystem facts and real
-process death stays.
+oracle to keep. Replacing them with Matrix self-checks would reduce evidence
+while appearing to complete the migration.
+
+That distinction is now a concrete division rather than an intention. Of the
+1,675 lines of Python in the repository:
+
+| Concern | Where it lives | Why |
+| --- | --- | --- |
+| Envelope build, digest confirmation, strict decode | `enigma.storage.envelope`, 7 Matrix checks | Pure codec logic with no host to witness |
+| Candidate validation, payload identity | `enigma.host.candidate`, 10 Matrix checks | Moved into the host, so tested beside it |
+| Real restarts, `SIGKILL`, lock contention | `tests/test_storage_recovery.py`, 7 checks | A process cannot witness its own death |
+| Storage faults | `tests/test_host_faults.py`, 6 checks | Injected from outside, so no host needs a seam |
+| Byte-identical envelopes | `tests/test_envelope_parity.py`, 6 checks | The second witness has to be the other encoder |
+| `store.py`'s own internals | `tests/test_durable_host.py`, 21 checks | Retires with `store.py` |
+
+The two Matrix suites are not a translation of Python checks; they cover logic
+that moved. `a_receipt_naming_another_instance_is_refused` is the case
+`test_bad_worker_binding_is_not_published` made by corrupting a worker reply
+from outside, and it now sits beside the check it exercises.
+
+Two of `store.py`'s checks have no successor and need none.
+`test_worker_output_is_bounded_and_exactly_one_json_line` and
+`test_exited_worker_parent_does_not_leave_a_pipe_holding_descendant` are about
+a subprocess transport. The Matrix host has no subprocess, so those concerns
+disappear rather than moving.
+
+Retiring `store.py` therefore removes 954 lines, itself and its white-box
+checks, and makes `test_envelope_parity.py` moot, since it pins that encoder.
+The 627 lines that remain are exactly the external-oracle layer, and both
+hosts are measured against all of it. That is the floor, not a staging post: a
+Matrix program cannot be the only witness to whether its bytes reached the
+disk.
 
 ## Limits
 
