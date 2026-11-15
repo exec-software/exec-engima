@@ -5,8 +5,7 @@ in **Matrix** on the [NIL Framework](https://github.com/exec-software/exec-nil-f
 Its intended query language takes Matrix's readable, explicit syntax as its
 starting point. Data security is a core design requirement.
 
-The repository is named `exec-engima`; the engine and executable are **Enigma**
-and `enigma`.
+The engine and executable are **Enigma** and `enigma`.
 
 ## Current state
 

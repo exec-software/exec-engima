@@ -1,8 +1,8 @@
 # Working on Enigma
 
-Enigma is a new database-engine seed written in Matrix. The repository spelling
-is `exec-engima`; the product is Enigma. Read `README.md`, `docs/development.md`,
-`docs/design/README.md`, `docs/design/ENI-0001-evidence-and-authority.md`,
+Enigma is a new database-engine seed written in Matrix. Read `README.md`,
+`docs/development.md`, `docs/design/README.md`,
+`docs/design/ENI-0001-evidence-and-authority.md`,
 `docs/design/ENI-0002-durable-state-and-recovery.md`, and `SECURITY.md` before
 extending the engine.
 
