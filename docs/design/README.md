@@ -19,6 +19,8 @@ defines the persistence host and restart contract.
 the Python placeholder host is retired.
 [ENI-0004: Authority capacity across restarts](ENI-0004-authority-capacity.md)
 decides how retired grants are reclaimed without recycling an identifier.
+[ENI-0005: Evidence retention](ENI-0005-evidence-retention.md) proposes the same
+treatment for the event log; it is a design record with nothing implemented.
 
 | Area | Current behavior |
 | --- | --- |
