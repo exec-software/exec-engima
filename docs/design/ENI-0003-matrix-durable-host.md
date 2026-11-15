@@ -1,8 +1,9 @@
 # ENI-0003: The Matrix durable host
 
-Status: design record for retiring the Python host. Phases A and B are
-implemented; the host itself is not ported, and commit ordering, recovery, and
-acknowledgement still belong to `scripts/store.py`.
+Status: design record for retiring the Python host. Phases A, B and C are
+implemented: a Matrix host exists and satisfies the black-box session contract
+on both routes. `scripts/store.py` remains the qualified path, because the
+fault-injection checks behind it have no Matrix equivalent yet.
 
 ## What this decides
 
@@ -137,12 +138,35 @@ Each phase is independently qualified and leaves a working tree.
   from both sides on golden vectors, and `validation/nil-io` compares a Matrix
   envelope built over real revoked-grant state against the bytes `store.py`
   would write for the same payload.
-- **C — session.** Implement private-directory setup, the session lock,
-  metadata preflight, and the five-step commit ordering in Matrix. Run the
-  existing durability and recovery suites against the Matrix host.
+- **C — session.** *Done.* `host/` builds `enigma-durable-host` with the same
+  command surface as `scripts/store.py`. The seven checks in
+  `test_storage_recovery.py` drive a host over its CLI, so they were
+  parameterized and now run against the Matrix host on the interpreter and
+  native routes, against the Python host, and in both interoperability
+  directions, through `scripts/test-matrix-host.sh`.
+
+  Three surfaces turned out to be needed beyond phase A's three, each found by
+  trying to write the host rather than by reading `store.py`:
+  `read_line_option` (NIL-0030), because `read_line` faulted at end of input so
+  a served session could not shut down cleanly; a native provider for
+  `random.hex`, because incarnation identifiers are drawn per recovery and the
+  host could not be built natively without it; and nothing at all for the
+  metadata preflight, because `read_regular_bytes` already opens once without
+  following its final component and rejects input observed changing under it,
+  which is what `store.py` assembled from `fstat` comparisons.
+
+  The five-step commit ordering is one call: `write_bytes_durable` performs the
+  private staging file, its synchronization, atomic replacement, and
+  synchronization of the same publication directory. Initial creation still
+  synchronizes the parent separately, because publishing a file inside a new
+  directory does not make that directory's own name durable.
 - **D — cutover.** Move the CLI to the Matrix host. `scripts/store.py` stops
   being a host and remains only as a test oracle, then is removed once Matrix
-  route evidence covers its cases.
+  route evidence covers its cases. The gap to close first is fault injection:
+  `test_durable_host.py` drives short writes, synchronization failures and
+  worker-protocol violations through injected Python I/O, and nothing exercises
+  those paths in the Matrix host. A cutover before that trades qualified
+  evidence for a working binary.
 
 Phase C is where acknowledgement ordering can regress silently, so it did not
 begin until B was byte-identical. It now can.
@@ -181,3 +205,13 @@ returns an explicit unsupported-platform error before filesystem mutation.
 
 Single-writer behavior is unchanged. Concurrency, indexes, and transport
 encoding remain open and must not be inferred from this consolidation.
+
+One difference between the hosts is worth recording rather than discovering
+later. `store.py` opens the database directory once and performs every later
+operation relative to that descriptor, so a swapped directory cannot redirect
+it mid-session. NIL's file operations are path-based, with no-follow on the
+final component only, and explicitly place parent-directory containment outside
+their contract. ENI-0002 already assumes a trusted owner of the storage
+directory and its ancestry, so the Matrix host does not break a stated
+guarantee, but it is weaker than what the Python host actually does. Closing it
+needs a directory-relative surface, which is not in any phase above.

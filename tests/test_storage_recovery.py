@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shlex
 import signal
 import subprocess
 import sys
@@ -17,6 +18,14 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 HOST = ROOT / "scripts" / "store.py"
+# ENI-0003 phase C: the same black-box session contract has to hold for either
+# host, so the command that launches one is configurable. These tests drive a
+# real process over its CLI and never reach inside it, which is what makes
+# them portable; the checks in test_durable_host.py inject Python I/O hooks
+# and remain specific to that host.
+HOST_COMMAND = (shlex.split(os.environ["ENIGMA_HOST_COMMAND"])
+                if os.environ.get("ENIGMA_HOST_COMMAND")
+                else [sys.executable, str(HOST)])
 TARGETS = tuple(filter(None, os.environ.get("ENIGMA_TEST_TARGETS", "vm").split(",")))
 CLAIM = {"subject": "sample:release", "relation": "ready", "object_value": "yes"}
 
@@ -36,7 +45,7 @@ class HostSession:
 
     def __init__(self, path: Path, target: str):
         self.process = subprocess.Popen(
-            [sys.executable, str(HOST), "serve", str(path), "--target", target],
+            [*HOST_COMMAND, "serve", str(path), "--target", target],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             bufsize=0,
         )
@@ -106,7 +115,7 @@ class HostSession:
 class StorageRecoveryTests(unittest.TestCase):
     def initialize(self, path: Path, target: str) -> dict:
         result = subprocess.run(
-            [sys.executable, str(HOST), "init", str(path), "--scope", "work", "--target", target],
+            [*HOST_COMMAND, "init", str(path), "--scope", "work", "--target", target],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
@@ -293,7 +302,7 @@ class StorageRecoveryTests(unittest.TestCase):
                         canonical.write_text(json.dumps(envelope), encoding="utf-8")
                     broken = canonical.read_bytes() if canonical.exists() else None
                     result = subprocess.run(
-                        [sys.executable, str(HOST), "serve", str(path), "--target", target],
+                        [*HOST_COMMAND, "serve", str(path), "--target", target],
                         input=b"", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         timeout=30, check=False,
                     )
@@ -314,7 +323,7 @@ class StorageRecoveryTests(unittest.TestCase):
                 with HostSession(path, target) as first:
                     before = checkpoint(path)[0]
                     second = subprocess.run(
-                        [sys.executable, str(HOST), "serve", str(path), "--target", target],
+                        [*HOST_COMMAND, "serve", str(path), "--target", target],
                         input=b"", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         timeout=10, check=False,
                     )

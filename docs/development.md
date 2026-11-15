@@ -116,11 +116,21 @@ against a real Enigma revoked-grant payload using a matching development SDK:
 NIL_SDK=/absolute/path/to/matching/development-sdk ./scripts/test-nil-io.sh
 ```
 
-The existing host remains the qualified persistence path. The library surfaces
-the port depends on are now qualified; the checkpoint envelope, commit
-orchestration, and recovery path are not ported, and a complete host port still
-needs separate qualification. See
-[ENI-0003](design/ENI-0003-matrix-durable-host.md) for the staging. Preserve
+The existing host remains the qualified persistence path. A Matrix host now
+exists under [`host/`](../host/README.md) and satisfies the same black-box
+session contract on the VM and native routes, with either host able to serve a
+database the other created:
+
+```sh
+NIL_SDK=/absolute/path/to/matching/development-sdk ./scripts/test-matrix-host.sh
+```
+
+`scripts/store.py` stays the qualified path because the contract is black-box.
+`tests/test_durable_host.py` injects Python I/O hooks to drive short writes,
+synchronization faults and worker-protocol violations, and those scenarios have
+no Matrix equivalent yet; closing that gap is what phase D needs before a
+cutover. See [ENI-0003](design/ENI-0003-matrix-durable-host.md) for the
+staging. Preserve
 database policy in Enigma; only general mechanisms belong in the framework
 standard library.
 
