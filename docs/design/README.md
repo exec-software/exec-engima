@@ -15,6 +15,8 @@ temporal database concepts are new.
 [ENI-0001: Evidence views under explicit authority](ENI-0001-evidence-and-authority.md)
 defines evidence behavior. [ENI-0002: Durable state and fail-closed recovery](ENI-0002-durable-state-and-recovery.md)
 defines the persistence host and restart contract.
+[ENI-0003: The Matrix durable host](ENI-0003-matrix-durable-host.md) decides how
+the Python placeholder host is retired; nothing is ported yet.
 
 | Area | Current behavior |
 | --- | --- |

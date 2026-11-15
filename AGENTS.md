@@ -3,7 +3,8 @@
 Enigma is a new database-engine seed written in Matrix. Read `README.md`,
 `docs/development.md`, `docs/design/README.md`,
 `docs/design/ENI-0001-evidence-and-authority.md`,
-`docs/design/ENI-0002-durable-state-and-recovery.md`, and `SECURITY.md` before
+`docs/design/ENI-0002-durable-state-and-recovery.md`,
+`docs/design/ENI-0003-matrix-durable-host.md`, and `SECURITY.md` before
 extending the engine.
 
 - Implement engine behavior in Matrix under `src/enigma/` with `.matrix` files.
