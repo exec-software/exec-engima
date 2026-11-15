@@ -225,12 +225,17 @@ Two of `store.py`'s checks have no successor and need none.
 a subprocess transport. The Matrix host has no subprocess, so those concerns
 disappear rather than moving.
 
-Retiring `store.py` therefore removes 954 lines, itself and its white-box
-checks, and makes `test_envelope_parity.py` moot, since it pins that encoder.
-The 627 lines that remain are exactly the external-oracle layer, and both
+What retires is the Python *engine* path, not the Python *checks*. Removing
+`store.py` removes 954 lines, itself and the white-box checks that reach into
+it. `test_envelope_parity.py` loses its second encoder and wants retargeting
+rather than deleting: the format properties it asserts, members in
+alphabetical order and no raw control byte in a payload, still want a witness
+that is not the encoder under test.
+
+The roughly 720 lines that remain are the external-oracle layer, and both
 hosts are measured against all of it. That is the floor, not a staging post: a
-Matrix program cannot be the only witness to whether its bytes reached the
-disk.
+Matrix program cannot witness its own death, and it cannot be the only witness
+to whether its bytes reached the disk.
 
 ## Limits
 
