@@ -215,8 +215,15 @@ class StorageRecoveryTests(unittest.TestCase):
                     host.close(kill=True)
                 with HostSession(path, target) as reopened:
                     state = checkpoint(path)[1]
-                    self.assertEqual([row["parent"] for row in state["grants"]], [0, 1, 2])
-                    self.assertTrue(all(row["revoked"] for row in state["grants"]))
+                    # ENI-0004: recovery reclaims the rows it retires, so an
+                    # ordinary restart no longer spends a lifetime budget. The
+                    # guarantee the old row inspection stood for is asserted
+                    # by the counters and the denials below: the identifiers
+                    # were issued and retired, none is reissued, and every one
+                    # is still refused.
+                    self.assertEqual(state["grants"], [])
+                    self.assertEqual(state["retired_through"], grandchild["grant_id"])
+                    self.assertEqual(state["next_grant_id"], grandchild["grant_id"] + 1)
                     for entity, session, grant in (("agent:a", 11, root["grant_id"]),
                                                    ("agent:child", 22, child["grant_id"]),
                                                    ("agent:grandchild", 33, grandchild["grant_id"])):
@@ -333,6 +340,40 @@ class StorageRecoveryTests(unittest.TestCase):
                     self.assertEqual(checkpoint(path)[0], before)
                     self.assertEqual(self.install(first)["code"], "ok")
 
+    def test_restarts_reclaim_grant_rows_and_never_reissue_an_identifier(self) -> None:
+        # ENI-0004 end to end. The exhaustion proof is a thousand cycles in
+        # the enigma.authority suite, where it costs milliseconds. What needs
+        # a real process here is narrower: that the counters survive the
+        # codec, the host and an actual restart, and that rows do not pile up
+        # across them.
+        for target in TARGETS:
+            with self.subTest(target=target), tempfile.TemporaryDirectory(prefix="enigma-recovery-") as temporary:
+                path = Path(temporary) / "db"
+                self.initialize(path, target)
+                issued = []
+                for restart in range(5):
+                    with HostSession(path, target) as host:
+                        # Reclamation happens when a session opens and
+                        # recovers, not when one closes, so this is where the
+                        # previous session's grant has to have gone.
+                        opened = checkpoint(path)[1]
+                        self.assertEqual(opened["grants"], [])
+                        if issued:
+                            self.assertGreaterEqual(opened["retired_through"], issued[-1])
+                            self.assertEqual(opened["next_grant_id"], issued[-1] + 1)
+                        grant = self.install(host, session=11 + restart)
+                        self.assertEqual(grant["code"], "ok")
+                        issued.append(grant["grant_id"])
+                        live = checkpoint(path)[1]
+                        self.assertEqual(len(live["grants"]), 1, "only the admitted grant is live")
+                        self.assertEqual(live["grants"][0]["id"], grant["grant_id"])
+                # Every identifier was distinct and increasing, so none was
+                # handed out twice even though every row was reclaimed.
+                self.assertEqual(issued, sorted(set(issued)))
+                with HostSession(path, target) as reopened:
+                    for grant_id in issued:
+                        self.assertEqual(self.resolve(reopened, grant_id)["code"], "denied")
+
     def test_restoring_older_coherent_checkpoint_does_not_reactivate_session(self) -> None:
         for target in TARGETS:
             with self.subTest(target=target), tempfile.TemporaryDirectory(prefix="enigma-recovery-") as temporary:
@@ -353,7 +394,13 @@ class StorageRecoveryTests(unittest.TestCase):
                 (path / "checkpoint.json").write_bytes(old_checkpoint)
                 with HostSession(path, target) as reopened:
                     self.assertNotEqual(reopened.instance, old_instance)
-                    self.assertTrue(checkpoint(path)[1]["grants"][0]["revoked"])
+                    # ENI-0004: the restored grant is not merely marked
+                    # revoked, it is reclaimed and its identifier sits below
+                    # the retirement mark, which is a stronger statement of
+                    # the same guarantee.
+                    restored = checkpoint(path)[1]
+                    self.assertEqual(restored["grants"], [])
+                    self.assertGreaterEqual(restored["retired_through"], issued["grant_id"])
                     old_envelope = reopened.request({"op": "resolve", "instance": old_instance,
                                                      "caller": caller(), "grant_id": issued["grant_id"],
                                                      "claim": CLAIM, "as_of": -1,

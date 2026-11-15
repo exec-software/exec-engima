@@ -243,8 +243,9 @@ This record covers host language, not durability guarantees. Everything ENI-0002
 excludes stays excluded: no hardware power-cut qualification, no general
 anti-rollback, no detection of an externally restored coherent checkpoint, no
 key management or encryption, no durable replay or idempotency ledger, no
-backups or migrations. The 256-grant ceiling and absent compaction are unchanged
-and still fail closed on exhaustion.
+backups or migrations. The grant ceiling now bounds live grants rather than
+every grant ever issued, per [ENI-0004](ENI-0004-authority-capacity.md), and
+still fails closed on exhaustion.
 
 NIL-0028 is a Linux-tested POSIX source-runtime profile, not an installed or
 release SDK. It is committed on the framework's `codex/enigma-durable-io`

@@ -44,6 +44,14 @@ end paragraph
 public authority_registry begin class
     field grant_count as number
     field clock_floor as number
+    !!! ENI-0004: an identifier is issued, never positional, so a row can be
+    !!! reclaimed without handing its identifier to a different holder.
+    !!! next_grant_id only increases. retired_through is the high-water mark
+    !!! below which every issued identifier has been retired, which is what
+    !!! lets a pruned grant still be refused as revoked rather than unknown.
+    field next_grant_id as number
+    field retired_through as number
+    field grant_ids as array of number
     field holder_entities as array of text
     field holder_sessions as array of number
     field scopes as array of text
@@ -57,6 +65,9 @@ public authority_registry begin class
     ready returns boolean begin paragraph
         give my grant_count is at least 0 and my grant_count is at most 256 and
             my clock_floor is at least 0 and
+            my next_grant_id is greater than 0 and my retired_through is at least 0 and
+            my retired_through is less than my next_grant_id and
+            (the length of my grant_ids) equals my grant_count and
             (the length of my holder_entities) equals my grant_count and
             (the length of my holder_sessions) equals my grant_count and
             (the length of my scopes) equals my grant_count and
@@ -80,17 +91,49 @@ public authority_registry begin class
         give yes
     end paragraph
 
+    !!! The row holding an identifier, or minus 1. A scan of at most 256 short
+    !!! arrays replaces indexing, which is what buys reclamation.
+    index_of receives grant_id as number returns number begin paragraph
+        repeat for index from 0 to my grant_count
+            when (my grant_ids at index) equals grant_id then
+                give index
+            end when
+        end repeat
+        give minus 1
+    end paragraph
+
+    !!! Why an identifier is refused, which a pruned row would otherwise make
+    !!! indistinguishable from one that was never issued.
+    public status_of receives grant_id as number returns text begin paragraph
+        when grant_id is at most 0 or grant_id is at least my next_grant_id then
+            give "unknown"
+        end when
+        value index is my index_of with grant_id being grant_id
+        when index is at least 0 then
+            when my revoked at index then
+                give "revoked"
+            end when
+            give "live"
+        end when
+        when grant_id is at most my retired_through then
+            give "revoked"
+        end when
+        give "unknown"
+    end paragraph
+
     live receives grant_id as number, tick as number returns boolean begin paragraph
-        when grant_id is at most 0 or grant_id is greater than my grant_count then
+        when grant_id is at most 0 or grant_id is at least my next_grant_id then
             give no
         end when
         variable cursor as number is grant_id
         variable depth as number is 0
         repeat while cursor is greater than 0
-            when cursor is greater than my grant_count or depth is at least 256 then
+            value index is my index_of with grant_id being cursor
+            !!! A pruned ancestor is not found, so the chain is refused rather
+            !!! than treated as unbroken.
+            when index is less than 0 or depth is at least 256 then
                 give no
             end when
-            value index is cursor minus 1
             when (my revoked at index) or tick is at least (my expiries at index) then
                 give no
             end when
@@ -111,12 +154,17 @@ public authority_registry begin class
         when not (my live with grant_id being grant_id, tick being caller.tick) then
             give no
         end when
-        value index is grant_id minus 1
+        value index is my index_of with grant_id being grant_id
+        when index is less than 0 then
+            give no
+        end when
         give caller.entity equals (my holder_entities at index) and caller.session equals (my holder_sessions at index)
     end paragraph
 
     append_grant receives entity as text, session as number, scope as text, operations as number,
         expires as number, work_limit as number, result_limit as number, parent_id as number returns grant_receipt begin paragraph
+        value issued is my next_grant_id
+        append issued to my grant_ids
         append entity to my holder_entities
         append session to my holder_sessions
         append scope to my scopes
@@ -127,7 +175,8 @@ public authority_registry begin class
         append parent_id to my parents
         append no to my revoked
         set my grant_count to my grant_count plus 1
-        give build grant_receipt with code being "ok", grant_id being my grant_count
+        set my next_grant_id to issued plus 1
+        give build grant_receipt with code being "ok", grant_id being issued
     end paragraph
 
     !!! Host-only root installation. No request-supplied entity may invoke this
@@ -155,7 +204,10 @@ public authority_registry begin class
         when operation does not equal 1 and operation does not equal 2 and operation does not equal 4 and operation does not equal 8 then
             give denied_decision with nothing
         end when
-        value index is grant_id minus 1
+        value index is my index_of with grant_id being grant_id
+        when index is less than 0 then
+            give denied_decision with nothing
+        end when
         when scope does not equal (my scopes at index) or ((my rights at index) bitwise and operation) does not equal operation then
             give denied_decision with nothing
         end when
@@ -168,7 +220,10 @@ public authority_registry begin class
         when not (my bound_holder with caller being caller, grant_id being parent_id) then
             give denied_receipt with nothing
         end when
-        value index is parent_id minus 1
+        value index is my index_of with grant_id being parent_id
+        when index is less than 0 then
+            give denied_receipt with nothing
+        end when
         value parent_rights is my rights at index
         when (parent_rights bitwise and 8) does not equal 8 then
             give denied_receipt with nothing
@@ -185,17 +240,55 @@ public authority_registry begin class
             result_limit being result_limit, parent_id being parent_id
     end paragraph
 
+    !!! ENI-0004. Recovery retires every grant, so nothing admitted afterwards
+    !!! can descend from one of them: delegation needs a live parent. Every
+    !!! retired row is therefore unreachable and is reclaimed here, which is
+    !!! what stops ordinary restarts from consuming a lifetime budget.
+    !!!
+    !!! retired_through records that every identifier below it was issued and
+    !!! retired, so a reclaimed grant is still refused as revoked rather than
+    !!! as one that never existed. Identifiers are not reissued: next_grant_id
+    !!! is untouched here and only ever increases.
+    public retire_and_reclaim returns number begin paragraph
+        when not (my ready with nothing) then
+            give 0
+        end when
+        variable reclaimed as number is 0
+        repeat for index from 0 to my grant_count
+            set my revoked at index to yes
+            set reclaimed to reclaimed plus 1
+        end repeat
+        set my retired_through to my next_grant_id minus 1
+        set my grant_ids to []
+        set my holder_entities to []
+        set my holder_sessions to []
+        set my scopes to []
+        set my rights to []
+        set my expiries to []
+        set my work_limits to []
+        set my result_limits to []
+        set my parents to []
+        set my revoked to []
+        set my grant_count to 0
+        give reclaimed
+    end paragraph
+
     public revoke receives caller as access_context, grant_id as number returns grant_receipt begin paragraph
         when not (my bound_holder with caller being caller, grant_id being grant_id) then
             give denied_receipt with nothing
         end when
-        set my revoked at (grant_id minus 1) to yes
+        value index is my index_of with grant_id being grant_id
+        when index is less than 0 then
+            give denied_receipt with nothing
+        end when
+        set my revoked at index to yes
         give build grant_receipt with code being "ok", grant_id being grant_id
     end paragraph
 end class
 
 public open_authority returns authority_registry begin paragraph
     give build authority_registry with grant_count being 0, clock_floor being 0,
+        next_grant_id being 1, retired_through being 0, grant_ids being [],
         holder_entities being [], holder_sessions being [], scopes being [], rights being [],
         expiries being [], work_limits being [], result_limits being [], parents being [], revoked being []
 end paragraph
@@ -543,4 +636,72 @@ identity_and_scope_length_limits_are_bounded begin test
     value authorized is registry.authorize with caller being (test_context with entity being maximum, session being 1, tick being 0),
         grant_id being 1, scope being maximum, operation being 1
     expect authorized.code equals "ok"
+end test
+
+note suite "enigma.authority"
+capacity_survives_far_more_restarts_than_the_live_ceiling begin test
+    !!! ENI-0004. Before reclamation this loop bricked the registry: recovery
+    !!! retired each grant but kept its row, so the 256 ceiling was a lifetime
+    !!! budget that ordinary restarts spent. A thousand cycles is far past it.
+    value registry is open_authority with nothing
+    variable cycle as number is 0
+    repeat while cycle is less than 1000
+        value installed is registry.install with entity being "owner", session being 1, scope being "scope",
+            operations being 9, expires being (cycle plus 2000000), work_limit being 20, result_limit being 5,
+            tick being cycle
+        expect installed.code equals "ok"
+        !!! An identifier is never reissued, so each cycle must hand out a
+        !!! strictly larger one even though every earlier row is gone.
+        expect installed.grant_id equals (cycle plus 1)
+        value usable is registry.authorize with caller being
+            (test_context with entity being "owner", session being 1, tick being cycle),
+            grant_id being installed.grant_id, scope being "scope", operation being 1
+        expect usable.code equals "ok"
+        expect (registry.retire_and_reclaim with nothing) equals 1
+        expect registry.grant_count equals 0
+        set cycle to cycle plus 1
+    end repeat
+    expect registry.next_grant_id equals 1001
+    expect registry.retired_through equals 1000
+    !!! Every reclaimed identifier is still refused, and refused as one that
+    !!! was issued and retired rather than one that never existed.
+    expect (registry.status_of with grant_id being 1) equals "revoked"
+    expect (registry.status_of with grant_id being 500) equals "revoked"
+    expect (registry.status_of with grant_id being 1000) equals "revoked"
+    expect (registry.status_of with grant_id being 1001) equals "unknown"
+    expect (registry.status_of with grant_id being 0) equals "unknown"
+    !!! And the registry is still open for business.
+    value fresh is registry.install with entity being "owner", session being 1, scope being "scope",
+        operations being 9, expires being 3000000, work_limit being 20, result_limit being 5, tick being 1000
+    expect fresh.code equals "ok"
+    expect fresh.grant_id equals 1001
+    expect (registry.status_of with grant_id being 1001) equals "live"
+end test
+
+note suite "enigma.authority"
+reclamation_keeps_the_live_ceiling_and_refuses_a_reclaimed_ancestor begin test
+    !!! The ceiling now bounds live grants, which is a real capacity limit,
+    !!! rather than every grant a database will ever issue.
+    value registry is open_authority with nothing
+    repeat for index from 0 to 256
+        expect (registry.install with entity being "owner", session being 1, scope being "scope", operations being 9,
+            expires being 100, work_limit being 20, result_limit being 5, tick being 0).code equals "ok"
+    end repeat
+    expect (registry.install with entity being "owner", session being 1, scope being "scope", operations being 9,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0).code equals "invalid"
+    expect (registry.retire_and_reclaim with nothing) equals 256
+    expect registry.retired_through equals 256
+    !!! A full registry becomes usable again after a restart, without any
+    !!! identifier being handed out twice.
+    value after is registry.install with entity being "owner", session being 1, scope being "scope", operations being 9,
+        expires being 100, work_limit being 20, result_limit being 5, tick being 0
+    expect after.code equals "ok"
+    expect after.grant_id equals 257
+    !!! A delegation cannot descend from a reclaimed grant: the ancestry walk
+    !!! cannot find it, so the chain is refused rather than treated as whole.
+    value orphaned is registry.delegate with caller being
+        (test_context with entity being "owner", session being 1, tick being 0),
+        parent_id being 1, entity being "agent", session being 2, operations being 1,
+        expires being 50, work_limit being 10, result_limit being 2
+    expect orphaned.code equals "denied"
 end test

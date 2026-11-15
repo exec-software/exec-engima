@@ -16,7 +16,9 @@ temporal database concepts are new.
 defines evidence behavior. [ENI-0002: Durable state and fail-closed recovery](ENI-0002-durable-state-and-recovery.md)
 defines the persistence host and restart contract.
 [ENI-0003: The Matrix durable host](ENI-0003-matrix-durable-host.md) decides how
-the Python placeholder host is retired; nothing is ported yet.
+the Python placeholder host is retired.
+[ENI-0004: Authority capacity across restarts](ENI-0004-authority-capacity.md)
+decides how retired grants are reclaimed without recycling an identifier.
 
 | Area | Current behavior |
 | --- | --- |
@@ -27,7 +29,7 @@ the Python placeholder host is retired; nothing is ported yet.
 | Authority | Trusted-host entity/session grants with exact audience, scope, rights, logical expiry, attenuation, and live ancestor revocation. |
 | Client | Typed operations and a discoverable surface under [`ext/enigma-client`](../../ext/enigma-client/README.md), outside `nil.std`. |
 | Persistence | Matrix checkpoint codec and validated recovery, with POSIX host locking, private files, atomic replacement, and sync-before-receipt ordering. |
-| Restart authority | Retain permission definitions, counters, ancestry, revocations, and clock floor; retire all old session grants and commit a fresh incarnation before `ready`. |
+| Restart authority | Retire every old session grant and reclaim its row, retaining the identifier counter, retirement high-water mark, and clock floor; commit a fresh incarnation before `ready`. |
 
 Each store has independent IDs, revisions, capacity, and work budgets. A failed
 write does not advance its revision. Current authority is required even for an
@@ -61,8 +63,11 @@ retains old grant rows and revocations, marks every old session grant retired,
 and commits a fresh random incarnation before admitting requests. New authority
 requires explicit re-admission; old-incarnation requests receive a fixed denial.
 Corruption or missing canonical state fails closed instead of restoring an older
-permission snapshot. There is no grant-ID recycling or compaction: the retained
-registry can exhaust its 256-grant ceiling and then fails closed.
+permission snapshot. An identifier is never recycled. Recovery reclaims the
+rows it retires, so the 256-grant ceiling bounds live grants rather than every
+grant a database will ever issue, and a reclaimed identifier is still refused
+as revoked rather than as one that never existed. Exhausting the live ceiling
+fails closed. See [ENI-0004](ENI-0004-authority-capacity.md).
 
 Durability assumes a trusted owner and storage ancestry plus a local POSIX
 filesystem honoring sync, atomic rename, and advisory locks. A coherent older
@@ -80,9 +85,11 @@ persistence guide](../persistence.md).
 2. **Richer evidence semantics:** evaluate typed values, causal dependencies,
    derived conclusions, and changes that invalidate them. Define how authority
    and provenance propagate before exposing cross-scope reasoning.
-3. **Persistence beyond the bounded checkpoint:** define compaction without
-   authority-ID reuse, migrations, backup/restore, durable replay/idempotency,
-   externally anchored rollback detection, and broader filesystem qualification.
+3. **Persistence beyond the bounded checkpoint:** authority reclamation is done
+   ([ENI-0004](ENI-0004-authority-capacity.md)); the 128-event log still has no
+   retention story. Define evidence compaction that keeps as-of reads honest,
+   migrations, backup/restore, durable replay/idempotency, externally anchored
+   rollback detection, and broader filesystem qualification.
 4. **Human language surface:** design bounded Matrix-inspired syntax that compiles
    into the same typed operations and authority checks. A parser must not execute
    arbitrary Matrix or grant authority from text.

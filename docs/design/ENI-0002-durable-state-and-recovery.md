@@ -69,9 +69,12 @@ also bind the current incarnation; a saved old-incarnation request gets a fixed
 denial before its body is interpreted. Grant issuance and re-admission remain
 trusted host responsibilities, following the Anomalous separation in ENI-0001.
 
-The retained registry still has a 256-grant ceiling. Repeated recovery and
-re-admission can exhaust it. Exhaustion fails closed; compaction must not reuse
-old authority identifiers and is not implemented in this slice.
+The registry has a 256-grant ceiling. In this slice retirement kept every
+retired row, so repeated recovery and re-admission exhausted that ceiling and
+a database could brick itself through ordinary restarts.
+[ENI-0004](ENI-0004-authority-capacity.md) separates an identifier from its
+position and reclaims retired rows during recovery, so the ceiling now bounds
+live grants. Exhaustion of that live ceiling still fails closed.
 
 ## Failures and limits of the guarantee
 

@@ -166,7 +166,12 @@ valid_state receives snapshot as durable_state returns boolean begin paragraph
     value authority is snapshot.authority
     value store is snapshot.store
     value count is authority.grant_count
-    when count is less than 0 or count is greater than 256 or authority.clock_floor is less than 0 then
+    when count is less than 0 or count is greater than 256 or authority.clock_floor is less than 0 or
+        authority.next_grant_id is at most 0 or authority.retired_through is less than 0 or
+        authority.retired_through is at least authority.next_grant_id then
+        give no
+    end when
+    when (the length of authority.grant_ids) does not equal count then
         give no
     end when
     when (the length of authority.holder_entities) does not equal count or (the length of authority.holder_sessions) does not equal count or
@@ -179,16 +184,40 @@ valid_state receives snapshot as durable_state returns boolean begin paragraph
     repeat for index from 0 to count
         value rights is authority.rights at index
         value parent is authority.parents at index
+        value identifier is authority.grant_ids at index
+        !!! A retained identifier sits above the retirement high-water mark and
+        !!! below the next one to be issued, so a reclaimed identifier cannot
+        !!! reappear as a live grant.
+        when identifier is at most authority.retired_through or
+            identifier is at least authority.next_grant_id then
+            give no
+        end when
+        !!! Identifiers increase with position. The ancestry walk depends on a
+        !!! parent having been issued before its child, and this is where that
+        !!! ordering is established.
+        when index is greater than 0 and identifier is at most (authority.grant_ids at (index minus 1)) then
+            give no
+        end when
         when not (valid_label with input being authority.holder_entities at index) or
             (authority.holder_sessions at index) is at most 0 or (authority.scopes at index) does not equal store.scope_name or
             rights is less than 1 or rights is greater than 15 or (authority.expiries at index) is at most 0 or
             (authority.work_limits at index) is less than 1 or (authority.work_limits at index) is greater than 65536 or
             (authority.result_limits at index) is less than 1 or (authority.result_limits at index) is greater than 65536 or
-            parent is less than 0 or parent is greater than index then
+            parent is less than 0 then
             give no
         end when
         when parent is greater than 0 then
-            value parent_index is parent minus 1
+            !!! Searching only earlier rows refuses a cycle and refuses a
+            !!! parent that was reclaimed out from under its child.
+            variable parent_index as number is minus 1
+            repeat for candidate from 0 to index
+                when (authority.grant_ids at candidate) equals parent then
+                    set parent_index to candidate
+                end when
+            end repeat
+            when parent_index is less than 0 then
+                give no
+            end when
             when ((authority.rights at parent_index) bitwise and 8) does not equal 8 or
                 (rights bitwise and (authority.rights at parent_index)) does not equal rights or
                 (authority.scopes at parent_index) does not equal (authority.scopes at index) or
@@ -262,7 +291,7 @@ public decode_state receives payload as text returns state_result begin paragrap
         give corrupt_state with nothing
     end when
     value root is parsed.unwrap with nothing
-    variable root_keys as array of text is ["schema", "database_id", "incarnation", "generation", "scope", "clock_floor", "grants", "events"]
+    variable root_keys as array of text is ["schema", "database_id", "incarnation", "generation", "scope", "clock_floor", "next_grant_id", "retired_through", "grants", "events"]
     when not (exact_object with node being root, keys being root_keys) then
         give corrupt_state with nothing
     end when
@@ -273,12 +302,22 @@ public decode_state receives payload as text returns state_result begin paragrap
     value scope is reader.text_field with node being root, key being "scope"
     value generation is reader.number_field with node being root, key being "generation"
     value floor is reader.number_field with node being root, key being "clock_floor"
-    when schema does not equal "enigma.state.v1" or not reader.valid then
+    value issued_next is reader.number_field with node being root, key being "next_grant_id"
+    value retired is reader.number_field with node being root, key being "retired_through"
+    !!! ENI-0004 added the issued identifier, next_grant_id and
+    !!! retired_through, so a v1 checkpoint is a different shape. It is refused
+    !!! rather than upgraded in place: migrations are future work, and this
+    !!! engine holds synthetic data, which is the right time to make a schema
+    !!! break explicit instead of guessing at an upgrade that cannot be tried
+    !!! against anything real.
+    when schema does not equal "enigma.state.v2" or not reader.valid then
         give corrupt_state with nothing
     end when
     value snapshot is new_state with database_id being database_id, incarnation being incarnation, scope being scope
     set snapshot.generation to generation
     set snapshot.authority.clock_floor to floor
+    set snapshot.authority.next_grant_id to issued_next
+    set snapshot.authority.retired_through to retired
     value grants is field_value with node being root, key being "grants"
     value grant_count is reader.array_length with node being grants
     value events is field_value with node being root, key being "events"
@@ -286,7 +325,7 @@ public decode_state receives payload as text returns state_result begin paragrap
     when not reader.valid or grant_count is greater than 256 or event_count is greater than 128 then
         give corrupt_state with nothing
     end when
-    variable grant_keys as array of text is ["entity", "session", "scope", "rights", "expires", "work_limit", "result_limit", "parent", "revoked"]
+    variable grant_keys as array of text is ["id", "entity", "session", "scope", "rights", "expires", "work_limit", "result_limit", "parent", "revoked"]
     repeat for index from 0 to grant_count
         value found is array_get with grants, index
         when found.is_error with nothing then
@@ -300,6 +339,7 @@ public decode_state receives payload as text returns state_result begin paragrap
         when not (exact_object with node being row, keys being grant_keys) then
             give corrupt_state with nothing
         end when
+        append (reader.number_field with node being row, key being "id") to snapshot.authority.grant_ids
         append (reader.text_field with node being row, key being "entity") to snapshot.authority.holder_entities
         append (reader.number_field with node being row, key being "session") to snapshot.authority.holder_sessions
         append (reader.text_field with node being row, key being "scope") to snapshot.authority.scopes
@@ -397,15 +437,18 @@ public encode_state receives snapshot as durable_state returns encoding_result b
     end when
     value writer is build state_writer with valid being yes
     variable root is (new_object with nothing).unwrap with nothing
-    set root to writer.set_text with node being root, key being "schema", input being "enigma.state.v1"
+    set root to writer.set_text with node being root, key being "schema", input being "enigma.state.v2"
     set root to writer.set_text with node being root, key being "database_id", input being snapshot.database_id
     set root to writer.set_text with node being root, key being "incarnation", input being snapshot.incarnation
     set root to writer.set_number with node being root, key being "generation", amount being snapshot.generation
     set root to writer.set_text with node being root, key being "scope", input being snapshot.store.scope_name
     set root to writer.set_number with node being root, key being "clock_floor", amount being snapshot.authority.clock_floor
+    set root to writer.set_number with node being root, key being "next_grant_id", amount being snapshot.authority.next_grant_id
+    set root to writer.set_number with node being root, key being "retired_through", amount being snapshot.authority.retired_through
     variable grants is (new_array with nothing).unwrap with nothing
     repeat for index from 0 to snapshot.authority.grant_count
         variable row is (new_object with nothing).unwrap with nothing
+        set row to writer.set_number with node being row, key being "id", amount being snapshot.authority.grant_ids at index
         set row to writer.set_text with node being row, key being "entity", input being snapshot.authority.holder_entities at index
         set row to writer.set_number with node being row, key being "session", amount being snapshot.authority.holder_sessions at index
         set row to writer.set_text with node being row, key being "scope", input being snapshot.authority.scopes at index

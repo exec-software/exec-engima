@@ -41,12 +41,20 @@ Reads and denied operations are also committed when their staged state changes,
 so authorization cannot advance the floor only in memory. Matrix validates the
 whole checkpoint before exposing evidence or authority.
 
-Opening a store retires **all** loaded session grants, retains their rows and
-prior revocations, installs a fresh random incarnation, and commits that recovery
-transition before `ready`. The trusted host must re-admit callers and explicitly
-install new grants. Old-incarnation requests are denied before their bodies are
-interpreted; old grant rows are never recycled. Persistent permission definitions
-do not authenticate a session after restart.
+Opening a store retires **all** loaded session grants and reclaims their rows,
+installs a fresh random incarnation, and commits that recovery transition before
+`ready`. The trusted host must re-admit callers and explicitly install new
+grants. Old-incarnation requests are denied before their bodies are interpreted.
+
+A grant identifier is issued rather than positional and is never reissued, so a
+reclaimed identifier is never handed to a different holder. A retirement
+high-water mark is retained, so a reclaimed grant is still refused as revoked
+rather than as one that never existed, though the engine no longer reports when
+or by whom it was revoked. Reclamation makes the grant ceiling a limit on live
+grants; before it, ordinary restarts spent a lifetime budget. Identifiers are
+not protected against an operator restoring a checkpoint written before one was
+issued, which is a consequence of the rollback limit below. Persistent
+permission definitions do not authenticate a session after restart.
 
 Missing, malformed, truncated, checksum-invalid, or semantically invalid primary
 state fails closed. Opening never auto-initializes a database, and recovery never

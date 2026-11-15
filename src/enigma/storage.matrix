@@ -331,9 +331,10 @@ public stage_request receives input as text returns text begin paragraph
         when incarnation equals snapshot.incarnation then
             give failed_packet with code being "invalid"
         end when
-        repeat for index from 0 to snapshot.authority.grant_count
-            set snapshot.authority.revoked at index to yes
-        end repeat
+        !!! ENI-0004: retire every grant and reclaim its row. Nothing admitted
+        !!! after this can descend from a retired grant, so keeping the rows
+        !!! only spent a lifetime budget that ordinary restarts exhausted.
+        evaluate snapshot.authority.retire_and_reclaim with nothing
         set snapshot.incarnation to incarnation
         set snapshot.generation to snapshot.generation plus 1
         value encoded is encode_state with snapshot being snapshot
@@ -394,9 +395,21 @@ recovery_retires_sessions_without_resetting_security_state begin test
     expect state.state.generation equals 1
     expect state.state.incarnation equals "after-recovery"
     expect state.state.authority.clock_floor equals 9
-    expect state.state.authority.grant_count equals 1
-    expect (state.state.authority.revoked at 0)
-    expect (state.state.authority.holder_sessions at 0) equals 1
+    !!! ENI-0004 changed what retirement leaves behind. The row is reclaimed
+    !!! rather than kept revoked, so an ordinary restart no longer spends a
+    !!! lifetime budget. What the old assertion was really guarding still
+    !!! holds, and is asserted directly below: the grant cannot be used, its
+    !!! identifier is not reissued, and it is still refused as revoked rather
+    !!! than as one that never existed.
+    expect state.state.authority.grant_count equals 0
+    expect state.state.authority.next_grant_id equals 2
+    expect state.state.authority.retired_through equals 1
+    expect (state.state.authority.status_of with grant_id being 1) equals "revoked"
+    expect (state.state.authority.status_of with grant_id being 2) equals "unknown"
+    value stale is build access_context with entity being "agent:test", session being 1,
+        audience being "enigma", tick being 10
+    expect (state.state.authority.authorize with caller being stale, grant_id being 1,
+        scope being "work", operation being 1).code equals "denied"
     value receipt is field_value with node being reply, key being "receipt"
     expect (get_text with node being receipt, key being "code") equals "ready"
 end test
