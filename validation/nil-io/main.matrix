@@ -2,10 +2,11 @@ book enigma.validation.nil_io
 
 read write_bytes_durable, read_regular_bytes, sync_directory, acquire_file_lock, release_file_lock,
     create_private_directory, is_private_regular_file, is_private_directory, sha256_hex from nil.std.io
-read byte_at, from_byte from nil.std.text
+read byte_at, from_byte, substring from nil.std.text
 read arg_count, arg from nil.std.system
 read access_context from enigma.authority
-read new_state, encode_state, decode_state from enigma.persistence
+read new_state, encode_state, decode_state,
+    build_envelope, read_envelope, confirm_envelope from enigma.persistence
 
 main returns override integer begin paragraph
     when (arg_count with nothing) does not equal 1 then
@@ -82,7 +83,33 @@ main returns override integer begin paragraph
         append (byte_at with s being digest_text, index being index) becomes override byte to digest_bytes
     end repeat
     expect (write_bytes_durable with path being root plus "/payload.sha256", content being digest_bytes, replace being no).is_ok with nothing
+
+    !!! The whole checkpoint envelope, built in Matrix over real state. The
+    !!! host oracle compares these bytes with the ones scripts/store.py would
+    !!! write for the same payload, which is ENI-0003's precondition for
+    !!! porting the host.
+    value envelope is build_envelope with payload being encoded.payload, digest being digest_text
+    expect envelope.code equals "ok"
+    variable envelope_bytes as array of override byte is []
+    repeat for index from 0 to (the length of envelope.content)
+        append (byte_at with s being envelope.content, index being index) becomes override byte to envelope_bytes
+    end repeat
+    expect (write_bytes_durable with path being root plus "/checkpoint.envelope", content being envelope_bytes, replace being no).is_ok with nothing
     expect (sync_directory with path being root).is_ok with nothing
+
+    !!! Round-trip: the payload survives and the digest confirms.
+    value reopened is read_envelope with content being envelope.content
+    expect reopened.code equals "ok"
+    expect reopened.payload equals encoded.payload
+    expect (confirm_envelope with decoded being reopened, computed being digest_text) equals "ok"
+    !!! A digest that does not describe this payload is rejected, so a swapped
+    !!! or stale checkpoint cannot be adopted as if it verified.
+    expect (confirm_envelope with decoded being reopened,
+        computed being "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") equals "mismatch"
+    !!! Truncation is a decode failure, never a silent empty checkpoint.
+    value truncated is substring with s being envelope.content, start being 0,
+        length being ((the length of envelope.content) minus 10)
+    expect (read_envelope with content being truncated).code equals "malformed"
 
     say "nil-io-checkpoint-ok"
     give 0

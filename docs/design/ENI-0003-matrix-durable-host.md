@@ -1,7 +1,8 @@
 # ENI-0003: The Matrix durable host
 
-Status: design record for retiring the Python host. Phase A is implemented
-in the framework; no part of the host is ported yet.
+Status: design record for retiring the Python host. Phases A and B are
+implemented; the host itself is not ported, and commit ordering, recovery, and
+acknowledgement still belong to `scripts/store.py`.
 
 ## What this decides
 
@@ -95,6 +96,28 @@ and recovery tests can run against either implementation and a half-ported tree
 stays testable. Divergence here forces a cutover with no cross-check, which is
 the outcome this record exists to avoid.
 
+Byte-identity holds, and it holds for two specific reasons rather than by
+luck. Both are now checked instead of assumed, because each is a trap for
+anyone extending the envelope:
+
+1. **Member order.** NILData sorts object members; Python preserves insertion
+   order. `format`, `payload` and `sha256` are already alphabetical, so the two
+   coincide. A member added out of alphabetical order would diverge silently,
+   so `test_members_are_alphabetical_so_both_orderings_agree` asserts the
+   property, not the current spelling.
+2. **Control-character escaping.** NILData spells a control character
+   `\u000a` where Python writes `\n`. These never describe the same checkpoint
+   because a payload is itself JSON output, and JSON escapes every control
+   character on the way in. The Python suite asserts this for every control
+   byte; the Matrix suite checks the newline case through its own encoder.
+
+Note what the codec does **not** do: it takes the digest as a parameter rather
+than hashing. That keeps `enigma.persistence` buildable against the previously
+selected SDK, which has no `sha256_hex` and no native `text.byte_at` provider,
+so the existing suite keeps running on both routes. A Matrix host that verifies
+a checkpoint end to end therefore still needs NIL-0029, which is development-SDK
+only. "Digest verification" here means comparison, not computation.
+
 ## Phases
 
 Each phase is independently qualified and leaves a working tree.
@@ -106,9 +129,14 @@ Each phase is independently qualified and leaves a working tree.
   So the digest half of byte-identical envelopes is already checked rather than
   assumed; phase B still has to match the envelope's JSON members and bytes.
   No Enigma behavior changed.
-- **B — envelope.** Implement envelope construction, digest verification, and
-  strict decode in Matrix. Prove byte-identical output against `store.py` for
-  the same payloads, including the corruption and malformed-envelope cases.
+- **B — envelope.** *Done.* `enigma.persistence` gained `build_envelope`,
+  `read_envelope` and `confirm_envelope`, with the `enigma.storage.envelope`
+  suite covering round-trip, a changed payload, non-hex and uppercase digests,
+  a missing, extra, duplicated or mistyped member, a wrong format identifier,
+  and a decode failure never becoming a confirmation. Byte-identity is pinned
+  from both sides on golden vectors, and `validation/nil-io` compares a Matrix
+  envelope built over real revoked-grant state against the bytes `store.py`
+  would write for the same payload.
 - **C — session.** Implement private-directory setup, the session lock,
   metadata preflight, and the five-step commit ordering in Matrix. Run the
   existing durability and recovery suites against the Matrix host.
@@ -116,8 +144,8 @@ Each phase is independently qualified and leaves a working tree.
   being a host and remains only as a test oracle, then is removed once Matrix
   route evidence covers its cases.
 
-Phase C is where acknowledgement ordering can regress silently, so it does not
-begin until B is byte-identical.
+Phase C is where acknowledgement ordering can regress silently, so it did not
+begin until B was byte-identical. It now can.
 
 ## Verification keeps a host oracle
 

@@ -9,11 +9,17 @@ it, and confirms that the grant remains denied. It then creates its own
 owner-only database directory, republishes the payload inside it, and computes
 the digest a checkpoint envelope would carry.
 
+It then builds the whole checkpoint envelope in Matrix over that state,
+confirms the payload round-trips, and confirms that a digest describing some
+other payload is rejected and a truncated envelope fails to decode.
+
 An independent host oracle verifies bytes, private file modes, the owner-only
-directory mode, namespace contents, and released lock ownership. It also
-recomputes the digest with Python's `hashlib`, so a Matrix envelope and a
-`store.py` envelope cannot silently disagree; ENI-0003 makes byte-identical
-envelopes the precondition for porting the host.
+directory mode, namespace contents, and released lock ownership. It recomputes
+the digest with Python's `hashlib`, and compares the Matrix envelope against
+the bytes `scripts/store.py` would write for the same payload, by importing
+that host rather than restating its encoder. ENI-0003 makes byte-identical
+envelopes the precondition for porting the host, so this is the check that
+keeps a half-ported tree readable by either one.
 
 Run with a matching development compiler, runtime, and standard library:
 

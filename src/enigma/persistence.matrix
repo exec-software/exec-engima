@@ -5,6 +5,7 @@ read everything from nil.std.core.result
 read everything from nil.std.core.option
 read everything from nil.std.core.convert
 read everything from nil.std.core
+read char_at, contains, substring from nil.std.text
 read authority_registry, open_authority, access_context from enigma.authority
 read evidence_store, open_store, proposition from enigma.ledger
 
@@ -639,4 +640,294 @@ oversized_and_corrupt_inputs_expose_no_partial_authority begin test
     expect corrupted.code equals "corrupt"
     expect corrupted.state.authority.grant_count equals 0
     expect corrupted.state.store.revision_value equals 0
+end test
+
+!!! The checkpoint integrity envelope, as a Matrix codec.
+!!!
+!!! ENI-0003 requires the Matrix host to emit the same envelope bytes as the
+!!! Python host, so either can read a directory the other wrote and a
+!!! half-ported tree stays testable. Two properties make that hold. Both are
+!!! consequences of how the encoders work, not coincidences, and both are
+!!! pinned by tests rather than assumed:
+!!!
+!!!   * NILData sorts object members while Python preserves insertion order.
+!!!     "format", "payload" and "sha256" are already in alphabetical order, so
+!!!     the two agree. A member added out of alphabetical order would diverge.
+!!!   * NILData escapes a control character as \u000a where Python writes \n.
+!!!     A payload is itself JSON output, and JSON never contains a raw control
+!!!     character, so the two escape forms cannot both be reachable here.
+!!!     an_envelope_escapes_a_raw_control_character checks that directly.
+!!!
+!!! Hashing stays outside this book. The caller supplies the digest, which
+!!! keeps the codec buildable against an SDK that has no sha256_hex yet, and
+!!! lets the same code be exercised without the durable host existing.
+
+public envelope_limit returns number begin paragraph
+    give 1048576
+end paragraph
+
+public envelope_format returns text begin paragraph
+    give "enigma.checkpoint.v1"
+end paragraph
+
+public envelope_text begin record
+    field code as text
+    field content as text
+end record
+
+public envelope_view begin record
+    field code as text
+    field payload as text
+    field digest as text
+end record
+
+malformed_text returns envelope_text begin paragraph
+    give build envelope_text with code being "malformed", content being ""
+end paragraph
+
+malformed_view returns envelope_view begin paragraph
+    give build envelope_view with code being "malformed", payload being "", digest being ""
+end paragraph
+
+!!! Exactly 64 lowercase hexadecimal characters. An uppercase or short digest
+!!! is rejected rather than normalized: a digest that needed normalizing did
+!!! not come from this codec, and accepting it would let two spellings of the
+!!! same checkpoint exist.
+public lowercase_hex_digest receives digest as text returns boolean begin paragraph
+    when (the length of digest) does not equal 64 then
+        give no
+    end when
+    repeat for index from 0 to 64
+        value character is char_at with s being digest, index being index
+        when not (contains with s being "0123456789abcdef", needle being character) then
+            give no
+        end when
+    end repeat
+    give yes
+end paragraph
+
+public build_envelope receives payload as text, digest as text returns envelope_text begin paragraph
+    when not (lowercase_hex_digest with digest being digest) then
+        give malformed_text with nothing
+    end when
+    value root_result is new_object with nothing
+    when root_result.is_error with nothing then
+        give malformed_text with nothing
+    end when
+    variable root is root_result.unwrap with nothing
+    value format_node is string_value with (envelope_format with nothing)
+    value payload_node is string_value with payload
+    value digest_node is string_value with digest
+    when format_node.is_error with nothing or payload_node.is_error with nothing or
+        digest_node.is_error with nothing then
+        give malformed_text with nothing
+    end when
+    value with_format is object_set with root, "format", (format_node.unwrap with nothing)
+    when with_format.is_error with nothing then
+        give malformed_text with nothing
+    end when
+    set root to with_format.unwrap with nothing
+    value with_payload is object_set with root, "payload", (payload_node.unwrap with nothing)
+    when with_payload.is_error with nothing then
+        give malformed_text with nothing
+    end when
+    set root to with_payload.unwrap with nothing
+    value with_digest is object_set with root, "sha256", (digest_node.unwrap with nothing)
+    when with_digest.is_error with nothing then
+        give malformed_text with nothing
+    end when
+    set root to with_digest.unwrap with nothing
+    value serialized is to_json with root
+    when serialized.is_error with nothing then
+        give malformed_text with nothing
+    end when
+    value content is serialized.unwrap with nothing
+    when (the length of content) is greater than (envelope_limit with nothing) then
+        give build envelope_text with code being "too_large", content being ""
+    end when
+    give build envelope_text with code being "ok", content being content
+end paragraph
+
+!!! Structural decode only. The digest is returned as claimed, never trusted;
+!!! confirm_envelope compares it against one the caller recomputed.
+public read_envelope receives content as text returns envelope_view begin paragraph
+    when (the length of content) is greater than (envelope_limit with nothing) then
+        give build envelope_view with code being "too_large", payload being "", digest being ""
+    end when
+    value parsed is from_json with content
+    when parsed.is_error with nothing then
+        give malformed_view with nothing
+    end when
+    value root is parsed.unwrap with nothing
+    value keys as array of text is ["format", "payload", "sha256"]
+    when not (exact_object with node being root, keys being keys) then
+        give malformed_view with nothing
+    end when
+    value format_found is field_text with node being root, key being "format"
+    value payload_found is field_text with node being root, key being "payload"
+    value digest_found is field_text with node being root, key being "sha256"
+    when format_found.is_error with nothing or payload_found.is_error with nothing or
+        digest_found.is_error with nothing then
+        give malformed_view with nothing
+    end when
+    when (format_found.unwrap with nothing) does not equal (envelope_format with nothing) then
+        give malformed_view with nothing
+    end when
+    value digest is digest_found.unwrap with nothing
+    when not (lowercase_hex_digest with digest being digest) then
+        give malformed_view with nothing
+    end when
+    give build envelope_view with code being "ok",
+        payload being (payload_found.unwrap with nothing), digest being digest
+end paragraph
+
+!!! The stored digest sits in plain sight beside the payload it describes, so
+!!! there is no secret here and no constant-time requirement. The Python host
+!!! compares digests in constant time defensively; plain equality has the same
+!!! effect. A digest detects accidental corruption and authenticates nothing:
+!!! whoever can rewrite the payload can rewrite the digest beside it.
+public confirm_envelope receives decoded as envelope_view, computed as text returns text begin paragraph
+    when decoded.code does not equal "ok" then
+        give decoded.code
+    end when
+    when not (lowercase_hex_digest with digest being computed) then
+        give "malformed"
+    end when
+    when decoded.digest does not equal computed then
+        give "mismatch"
+    end when
+    give "ok"
+end paragraph
+
+note if_test_mode
+backslash returns text begin paragraph
+    value escaped is (to_json with ((string_value with quote).unwrap with nothing)).unwrap with nothing
+    give substring with s being escaped, start being 1, length being 1
+end paragraph
+
+note if_test_mode
+simple_payload returns text begin paragraph
+    give "{" plus quote plus "schema" plus quote plus ":" plus quote plus "enigma.state.v1" plus quote plus "}"
+end paragraph
+
+note if_test_mode
+simple_digest returns text begin paragraph
+    give "3d1ffca68a95d9ee3e06ad2692fff0f9bb841a8c598f1ee26bf8459aadccdf2a"
+end paragraph
+
+note suite "enigma.storage.envelope"
+build_emits_the_exact_bytes_the_python_host_writes begin test
+    !!! The literal is the output of scripts/store.py's envelope encoder for
+    !!! this payload and digest. tests/test_envelope_parity.py pins the same
+    !!! vector from the Python side, so either encoder drifting fails a test.
+    value slash is backslash with nothing
+    value expected is "{" plus quote plus "format" plus quote plus ":" plus quote plus "enigma.checkpoint.v1" plus quote
+        plus "," plus quote plus "payload" plus quote plus ":" plus quote
+        plus "{" plus slash plus quote plus "schema" plus slash plus quote plus ":"
+        plus slash plus quote plus "enigma.state.v1" plus slash plus quote plus "}" plus quote
+        plus "," plus quote plus "sha256" plus quote plus ":" plus quote
+        plus (simple_digest with nothing) plus quote plus "}"
+    value built is build_envelope with payload being (simple_payload with nothing), digest being (simple_digest with nothing)
+    expect built.code equals "ok"
+    expect built.content equals expected
+end test
+
+note suite "enigma.storage.envelope"
+read_accepts_what_build_produced begin test
+    value built is build_envelope with payload being (simple_payload with nothing), digest being (simple_digest with nothing)
+    expect built.code equals "ok"
+    value decoded is read_envelope with content being built.content
+    expect decoded.code equals "ok"
+    expect decoded.payload equals (simple_payload with nothing)
+    expect decoded.digest equals (simple_digest with nothing)
+    expect (confirm_envelope with decoded being decoded, computed being (simple_digest with nothing)) equals "ok"
+end test
+
+note suite "enigma.storage.envelope"
+a_changed_payload_fails_confirmation begin test
+    value built is build_envelope with payload being (simple_payload with nothing), digest being (simple_digest with nothing)
+    value decoded is read_envelope with content being built.content
+    expect decoded.code equals "ok"
+    !!! The digest of some other payload: a stored digest is never self-proving.
+    expect (confirm_envelope with decoded being decoded,
+        computed being "bdbf98f6b7888db7c08e86692ce4c603389c8e4fc0cee194d636802fa22fb7b3") equals "mismatch"
+end test
+
+note suite "enigma.storage.envelope"
+build_rejects_a_digest_that_is_not_lowercase_hex begin test
+    value payload is simple_payload with nothing
+    expect (build_envelope with payload being payload, digest being "").code equals "malformed"
+    expect (build_envelope with payload being payload, digest being "abc").code equals "malformed"
+    !!! Uppercase is rejected rather than normalized.
+    expect (build_envelope with payload being payload,
+        digest being "3D1FFCA68A95D9EE3E06AD2692FFF0F9BB841A8C598F1EE26BF8459AADCCDF2A").code equals "malformed"
+    !!! 64 characters, but 'g' is not a hex digit.
+    expect (build_envelope with payload being payload,
+        digest being "g" plus "d1ffca68a95d9ee3e06ad2692fff0f9bb841a8c598f1ee26bf8459aadccdf2a" plus "0").code equals "malformed"
+end test
+
+note suite "enigma.storage.envelope"
+read_rejects_malformed_and_mislabelled_envelopes begin test
+    value digest is simple_digest with nothing
+    value slash is backslash with nothing
+    expect (read_envelope with content being "").code equals "malformed"
+    expect (read_envelope with content being "not json").code equals "malformed"
+    !!! An array is valid JSON but not an envelope.
+    expect (read_envelope with content being "[]").code equals "malformed"
+    !!! A missing member, an extra member, and a wrong format identifier.
+    expect (read_envelope with content being ("{" plus quote plus "format" plus quote plus ":" plus quote
+        plus "enigma.checkpoint.v1" plus quote plus "}")).code equals "malformed"
+    value extra is "{" plus quote plus "format" plus quote plus ":" plus quote plus "enigma.checkpoint.v1" plus quote
+        plus "," plus quote plus "payload" plus quote plus ":" plus quote plus quote
+        plus "," plus quote plus "sha256" plus quote plus ":" plus quote plus digest plus quote
+        plus "," plus quote plus "extra" plus quote plus ":" plus quote plus quote plus "}"
+    expect (read_envelope with content being extra).code equals "malformed"
+    value wrong_format is "{" plus quote plus "format" plus quote plus ":" plus quote plus "enigma.checkpoint.v2" plus quote
+        plus "," plus quote plus "payload" plus quote plus ":" plus quote plus quote
+        plus "," plus quote plus "sha256" plus quote plus ":" plus quote plus digest plus quote plus "}"
+    expect (read_envelope with content being wrong_format).code equals "malformed"
+    !!! A payload that is not text, and a digest that is not text.
+    value payload_number is "{" plus quote plus "format" plus quote plus ":" plus quote plus "enigma.checkpoint.v1" plus quote
+        plus "," plus quote plus "payload" plus quote plus ":" plus "7"
+        plus "," plus quote plus "sha256" plus quote plus ":" plus quote plus digest plus quote plus "}"
+    expect (read_envelope with content being payload_number).code equals "malformed"
+    value digest_number is "{" plus quote plus "format" plus quote plus ":" plus quote plus "enigma.checkpoint.v1" plus quote
+        plus "," plus quote plus "payload" plus quote plus ":" plus quote plus quote
+        plus "," plus quote plus "sha256" plus quote plus ":" plus "7" plus "}"
+    expect (read_envelope with content being digest_number).code equals "malformed"
+    !!! A duplicate member is rejected by the decoder itself.
+    value duplicated is "{" plus quote plus "format" plus quote plus ":" plus quote plus "enigma.checkpoint.v1" plus quote
+        plus "," plus quote plus "payload" plus quote plus ":" plus quote plus quote
+        plus "," plus quote plus "payload" plus quote plus ":" plus quote plus quote
+        plus "," plus quote plus "sha256" plus quote plus ":" plus quote plus digest plus quote plus "}"
+    expect (read_envelope with content being duplicated).code equals "malformed"
+end test
+
+note suite "enigma.storage.envelope"
+confirm_passes_a_decode_failure_through begin test
+    value broken is read_envelope with content being "not json"
+    expect broken.code equals "malformed"
+    !!! A failed decode never becomes an "ok" confirmation, whatever is supplied.
+    expect (confirm_envelope with decoded being broken, computed being (simple_digest with nothing)) equals "malformed"
+end test
+
+note suite "enigma.storage.envelope"
+an_envelope_escapes_a_raw_control_character begin test
+    !!! The property byte-identity depends on. NILData spells a control
+    !!! character \u000a where Python writes \n, so the two encoders would
+    !!! diverge if either were ever asked to carry one raw. They are not: a
+    !!! payload is JSON output, and encoding escapes it on the way in.
+    !!! test_envelope_parity.py asserts this for every control byte; this
+    !!! checks the newline case through the Matrix encoder itself.
+    value raw is "a" plus newline plus "b"
+    expect contains with s being raw, needle being newline
+    value wrapped is build_envelope with payload being raw, digest being (simple_digest with nothing)
+    expect wrapped.code equals "ok"
+    expect not (contains with s being wrapped.content, needle being newline)
+    !!! A payload that already came from an encoder has nothing left to escape.
+    value payload is simple_payload with nothing
+    expect not (contains with s being payload, needle being newline)
+    value built is build_envelope with payload being payload, digest being (simple_digest with nothing)
+    expect built.code equals "ok"
+    expect not (contains with s being built.content, needle being newline)
 end test

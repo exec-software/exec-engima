@@ -21,6 +21,7 @@ __pycache__/
 *.key
 *.pem
 *.log
+*.nycrash
 *.db
 *.sqlite
 *.sqlite3
