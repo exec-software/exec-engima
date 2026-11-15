@@ -125,12 +125,18 @@ database the other created:
 NIL_SDK=/absolute/path/to/matching/development-sdk ./scripts/test-matrix-host.sh
 ```
 
-`scripts/store.py` stays the qualified path because the contract is black-box.
-`tests/test_durable_host.py` injects Python I/O hooks to drive short writes,
-synchronization faults and worker-protocol violations, and those scenarios have
-no Matrix equivalent yet; closing that gap is what phase D needs before a
-cutover. See [ENI-0003](design/ENI-0003-matrix-durable-host.md) for the
-staging. Preserve
+That runner also injects storage faults from the filesystem and the process
+environment, against both hosts: a commit that cannot be published is never
+acknowledged, an unsafe or multiply-linked checkpoint is refused, a rewritten
+payload fails its digest, and an oversized request ends a session rather than
+being truncated into a different one.
+
+`scripts/store.py` stays the qualified path because the Matrix host needs
+NIL-0028 through NIL-0030 and a native `random.hex`, so making it the default
+would leave `./scripts/test.sh` unrunnable without a development build. Short
+writes, a crash at a chosen commit phase, forged worker replies, and the
+host's response to an uncertain publication still need a seam inside a host
+and are not claimed. See [ENI-0003](design/ENI-0003-matrix-durable-host.md). Preserve
 database policy in Enigma; only general mechanisms belong in the framework
 standard library.
 

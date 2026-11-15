@@ -40,6 +40,13 @@ run_suite() {
         python3 -I -m unittest discover -s "$enigma_project_root/tests" \
         -p 'test_storage_recovery.py' > /dev/null
     printf 'PASS session contract %s\n' "$label"
+    # Faults injected from the filesystem and the process environment, so the
+    # host under test needs no seam of its own. Both hosts must satisfy these:
+    # a scenario only one of them passes describes that host, not the contract.
+    ENIGMA_TEST_TARGETS=vm NIL_SDK="$enigma_sdk_directory" ENIGMA_HOST_COMMAND="$*" \
+        python3 -I -m unittest discover -s "$enigma_project_root/tests" \
+        -p 'test_host_faults.py' > /dev/null
+    printf 'PASS storage faults %s\n' "$label"
 }
 
 for route in "${routes[@]}"; do

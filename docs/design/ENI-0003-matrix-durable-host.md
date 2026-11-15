@@ -1,9 +1,10 @@
 # ENI-0003: The Matrix durable host
 
 Status: design record for retiring the Python host. Phases A, B and C are
-implemented: a Matrix host exists and satisfies the black-box session contract
-on both routes. `scripts/store.py` remains the qualified path, because the
-fault-injection checks behind it have no Matrix equivalent yet.
+implemented, and phase D's evidence gap is closed: a Matrix host satisfies the
+session contract and the storage-fault contract on both routes, and so does
+`scripts/store.py`. The cutover itself waits on a released SDK, not on
+evidence.
 
 ## What this decides
 
@@ -160,13 +161,31 @@ Each phase is independently qualified and leaves a working tree.
   synchronization of the same publication directory. Initial creation still
   synchronizes the parent separately, because publishing a file inside a new
   directory does not make that directory's own name durable.
-- **D — cutover.** Move the CLI to the Matrix host. `scripts/store.py` stops
-  being a host and remains only as a test oracle, then is removed once Matrix
-  route evidence covers its cases. The gap to close first is fault injection:
-  `test_durable_host.py` drives short writes, synchronization failures and
-  worker-protocol violations through injected Python I/O, and nothing exercises
-  those paths in the Matrix host. A cutover before that trades qualified
-  evidence for a working binary.
+- **D — cutover.** *Evidence landed; the move is blocked.* The fault-injection
+  gap is closed by `tests/test_host_faults.py`, which injects from the
+  filesystem and the process environment rather than through a seam inside the
+  host. Adding a seam was rejected: a production host with a fault switch is no
+  longer the thing under test, which is the rule NIL-0028's own helpers state.
+  Every check runs against both hosts, because a scenario only one of them
+  satisfies describes that host rather than the contract. Writing them found a
+  real gap — the Matrix host accepted a checkpoint with a loose mode or a
+  second hard link, which `store.py` rejects — and the host now performs that
+  preflight explicitly.
+
+  What the move still needs is a released SDK. The Matrix host requires
+  NIL-0028 through NIL-0030 and a native `random.hex`, none of which an
+  installed SDK has, so making it the default would leave `./scripts/test.sh`
+  unrunnable for anyone without a development build. `scripts/store.py`
+  therefore stays the qualified path, and nothing is retired.
+
+  Four scenarios remain out of reach without a seam, and are not claimed: a
+  partial write followed by success, a crash at a chosen commit phase, a
+  worker reply that violates its protocol, and the host's handling of
+  NIL-0028's uncertain publication. `RLIMIT_FSIZE` makes a write fail outright
+  rather than truncate; the `SIGKILL` check kills at an arbitrary point rather
+  than a chosen one; `stage_request` is the real engine, so no reply can be
+  forged past it; and the framework tests the uncertain outcome of the
+  primitive, not this host's response to it.
 
 Phase C is where acknowledgement ordering can regress silently, so it did not
 begin until B was byte-identical. It now can.

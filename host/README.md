@@ -45,11 +45,22 @@ is a legitimate successor to committed state, and they run before publication.
 `scripts/store.py` remains the qualified persistence path. This host satisfies
 the same session contract — recovery, incarnation rotation, fail-closed
 corruption handling, single-writer refusal, clock-floor persistence, and
-survival of `SIGKILL` mid-session — but the contract is black-box. The checks
-in `tests/test_durable_host.py` inject Python I/O hooks to drive short writes,
-synchronization faults and worker-protocol violations; those scenarios have no
-equivalent here yet, so this host has less fault-injection evidence behind it
-than the one it is meant to replace.
+survival of `SIGKILL` mid-session — and the same storage-fault contract, where
+a commit that cannot be published is never acknowledged, an unsafe or
+multiply-linked checkpoint is refused, a rewritten payload fails its digest,
+and an oversized request ends the session rather than being truncated into a
+different one. Both contracts run against both hosts, because a scenario only
+one host satisfies describes that host rather than the contract.
+
+What keeps `store.py` in place is not missing evidence but the SDK. This host
+needs NIL-0028 through NIL-0030 and a native `random.hex`, so making it the
+default would leave `./scripts/test.sh` unrunnable without a development build.
+
+Four scenarios still need a seam inside a host and are not claimed here: a
+partial write followed by success, a crash at a chosen commit phase, a worker
+reply that violates its protocol, and this host's response to NIL-0028's
+uncertain publication. A seam was deliberately not added — a production host
+with a fault switch is no longer the thing under test.
 
 ## One difference worth knowing
 

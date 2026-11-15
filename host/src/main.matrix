@@ -4,7 +4,8 @@ read everything from nil.std.nildata
 read everything from nil.std.core
 read write_bytes_durable, read_regular_bytes, sync_directory,
     acquire_file_lock, create_private_directory,
-    is_private_directory, sha256_hex, read_line_option, write_error,
+    is_private_directory, is_private_regular_file, sha256_hex,
+    read_line_option, write_error,
     dirname from nil.std.io
 read byte_at, from_byte, char_at, contains from nil.std.text
 read random_hex from nil.std.security
@@ -356,7 +357,21 @@ end record
 !!! there is no fallback to an earlier snapshot.
 load_checkpoint receives directory as text returns load_view begin paragraph
     value failed is build load_view with ok being no, payload being ""
-    value raw is read_regular_bytes with path being (directory plus "/" plus (checkpoint_name with nothing)),
+    value canonical is directory plus "/" plus (checkpoint_name with nothing)
+    !!! The Python host checked the opened descriptor: a regular file, owned by
+    !!! the effective user, singly linked, exactly 0600. read_regular_bytes
+    !!! rejects special files and will not follow the final component, but it
+    !!! accepts a loose mode and a second hard link, so the preflight is
+    !!! explicit here. It inspects a path, so it is weaker than a check on the
+    !!! descriptor that is then read; publication keeps its own checked open.
+    value private is is_private_regular_file with path being canonical
+    when private.is_error with nothing then
+        give failed
+    end when
+    when not (private.unwrap with nothing) then
+        give failed
+    end when
+    value raw is read_regular_bytes with path being canonical,
         maximum_bytes being (checkpoint_limit with nothing)
     when raw.is_error with nothing then
         give failed
