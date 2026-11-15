@@ -1,0 +1,47 @@
+book enigma.validation.nil_io
+
+read write_bytes_durable, read_regular_bytes, sync_directory, acquire_file_lock, release_file_lock from nil.std.io
+read byte_at, from_byte from nil.std.text
+read arg_count, arg from nil.std.system
+read access_context from enigma.authority
+read new_state, encode_state, decode_state from enigma.persistence
+
+main returns override integer begin paragraph
+    when (arg_count with nothing) does not equal 1 then
+        give 64
+    end when
+    value root is arg with index being 0
+    value snapshot is new_state with database_id being "validation", incarnation being "validation-boot", scope being "validation"
+    value grant is snapshot.authority.install with entity being "validation:agent", session being 1, scope being "validation",
+        operations being 1, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    expect grant.code equals "ok"
+    value caller is build access_context with entity being "validation:agent", session being 1, audience being "enigma", tick being 1
+    expect (snapshot.authority.revoke with caller being caller, grant_id being grant.grant_id).code equals "ok"
+    value encoded is encode_state with snapshot being snapshot
+    expect encoded.code equals "ok"
+    variable bytes as array of override byte is []
+    repeat for index from 0 to (the length of encoded.payload)
+        append (byte_at with s being encoded.payload, index being index) becomes override byte to bytes
+    end repeat
+
+    value acquired is acquire_file_lock with path being root plus "/writer.lock", create being yes
+    expect acquired.is_ok with nothing
+    value token is acquired.unwrap with nothing
+    expect (sync_directory with path being root).is_ok with nothing
+    expect (write_bytes_durable with path being root plus "/snapshot.json", content being bytes, replace being no).is_ok with nothing
+    expect (write_bytes_durable with path being root plus "/snapshot.json", content being bytes, replace being no).is_error with nothing
+    value readback is read_regular_bytes with path being root plus "/snapshot.json", maximum_bytes being 524288
+    expect readback.is_ok with nothing
+    variable payload as text is ""
+    repeat for each octet in (readback.unwrap with nothing)
+        set payload to payload plus (from_byte with code being octet becomes number)
+    end repeat
+    value recovered is decode_state with payload being payload
+    expect recovered.code equals "ok"
+    expect recovered.state.authority.clock_floor equals 1
+    expect (recovered.state.authority.authorize with caller being caller, grant_id being grant.grant_id, scope being "validation", operation being 1).code equals "denied"
+    expect (release_file_lock with token being token).is_ok with nothing
+    expect (release_file_lock with token being token).is_error with nothing
+    say "nil-io-checkpoint-ok"
+    give 0
+end paragraph

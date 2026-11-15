@@ -26,8 +26,10 @@ extending the engine.
   persistence claims without implementing and testing the necessary contracts.
 - Keep generated output, SDKs, secrets, and local databases untracked. Use
   synthetic data in tests and examples.
-- Do not modify sibling projects or the parent workspace to make this project
-  build. Select a complete SDK through `NIL_SDK` when needed.
+- General library gaps should feed back into NIL. Make framework changes in an
+  isolated NIL branch with paired Ny/Matrix runtime checks; keep database policy
+  in Enigma and preserve unrelated sibling/parent work. Select matching tools
+  and library sources through `NIL_SDK` when qualifying a new runtime.
 - Durable calls go through `scripts/store.py` and the separate Matrix storage
   worker. The existing embedded client remains volatile. Never acknowledge a
   durable operation before file fsync, atomic publication, and directory fsync.

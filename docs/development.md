@@ -104,6 +104,21 @@ backups, keys, and credentials out of Git; use synthetic fixtures in tests.
 
 ## Source conventions
 
+General library gaps found while building Enigma should feed back into NIL.
+The first contribution adds POSIX durable byte publication, directory sync, and
+context-owned advisory file locks, with Ny/Matrix VM and native checks. The
+[consumer contract](../validation/nil-io/README.md) exercises those primitives
+against a real Enigma revoked-grant payload using a matching development SDK:
+
+```sh
+NIL_SDK=/absolute/path/to/matching/development-sdk ./scripts/test-nil-io.sh
+```
+
+The existing host remains the qualified persistence path. Private-directory and
+metadata primitives, a supported standalone integrity-hash API, and a complete
+host port still need separate qualification. Preserve database policy in Enigma;
+only general mechanisms belong in the framework standard library.
+
 Use `book enigma.<area>` with files under `src/enigma/` and `.matrix` extensions.
 Prefer explicit imports and named call arguments. Put `begin test` declarations
 beside the code they exercise; `niltest` discovers tests through the entrypoint's
