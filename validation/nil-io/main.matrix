@@ -1,6 +1,7 @@
 book enigma.validation.nil_io
 
-read write_bytes_durable, read_regular_bytes, sync_directory, acquire_file_lock, release_file_lock from nil.std.io
+read write_bytes_durable, read_regular_bytes, sync_directory, acquire_file_lock, release_file_lock,
+    create_private_directory, is_private_regular_file, is_private_directory, sha256_hex from nil.std.io
 read byte_at, from_byte from nil.std.text
 read arg_count, arg from nil.std.system
 read access_context from enigma.authority
@@ -42,6 +43,47 @@ main returns override integer begin paragraph
     expect (recovered.state.authority.authorize with caller being caller, grant_id being grant.grant_id, scope being "validation", operation being 1).code equals "denied"
     expect (release_file_lock with token being token).is_ok with nothing
     expect (release_file_lock with token being token).is_error with nothing
+
+    !!! A database directory the engine creates for itself, rather than one a
+    !!! host prepared. The harness supplies root already owner-only.
+    value root_private is is_private_directory with path being root
+    expect root_private.is_ok with nothing
+    expect root_private.unwrap with nothing
+    value store is root plus "/store"
+    expect (create_private_directory with path being store).is_ok with nothing
+    !!! An existing database directory is never silently adopted.
+    expect (create_private_directory with path being store).is_error with nothing
+    value store_private is is_private_directory with path being store
+    expect store_private.is_ok with nothing
+    expect store_private.unwrap with nothing
+    expect (write_bytes_durable with path being store plus "/snapshot.json", content being bytes, replace being no).is_ok with nothing
+    expect (sync_directory with path being store).is_ok with nothing
+    value published is is_private_regular_file with path being store plus "/snapshot.json"
+    expect published.is_ok with nothing
+    expect published.unwrap with nothing
+    !!! A directory is not a private regular file, and that is a verdict rather
+    !!! than a failure to inspect.
+    value store_as_file is is_private_regular_file with path being store
+    expect store_as_file.is_ok with nothing
+    expect not (store_as_file.unwrap with nothing)
+    !!! An absent checkpoint cannot be inspected at all, which recovery must be
+    !!! able to tell apart from an unsafe one.
+    expect (is_private_regular_file with path being store plus "/absent.json").is_error with nothing
+
+    !!! The digest the Matrix host would place in a checkpoint envelope. The
+    !!! host oracle recomputes it independently, so ENI-0003's byte-identical
+    !!! envelope requirement is checked rather than assumed.
+    value digest is sha256_hex with data being bytes
+    expect digest.is_ok with nothing
+    value digest_text is digest.unwrap with nothing
+    expect (the length of digest_text) equals 64
+    variable digest_bytes as array of override byte is []
+    repeat for index from 0 to (the length of digest_text)
+        append (byte_at with s being digest_text, index being index) becomes override byte to digest_bytes
+    end repeat
+    expect (write_bytes_durable with path being root plus "/payload.sha256", content being digest_bytes, replace being no).is_ok with nothing
+    expect (sync_directory with path being root).is_ok with nothing
+
     say "nil-io-checkpoint-ok"
     give 0
 end paragraph

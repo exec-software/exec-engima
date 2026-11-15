@@ -29,16 +29,32 @@ for route in "${routes[@]}"; do
     fi
     "${command[@]}" "$temporary/$route" > "$temporary/stdout"
     [[ "$(< "$temporary/stdout")" == "nil-io-checkpoint-ok" ]]
-    python3 - "$temporary/$route" <<'PY'
-import fcntl, json, os, stat, sys
+    python3 -I - "$temporary/$route" <<'PY'
+import fcntl, hashlib, json, os, stat, sys
 from pathlib import Path
 root = Path(sys.argv[1])
-assert {p.name for p in root.iterdir()} == {'snapshot.json', 'writer.lock'}
-state = json.loads((root / 'snapshot.json').read_bytes())
+assert {p.name for p in root.iterdir()} == {
+    'snapshot.json', 'writer.lock', 'payload.sha256', 'store'}
+payload = (root / 'snapshot.json').read_bytes()
+state = json.loads(payload)
 assert state['grants'][0]['revoked'] is True
 assert state['clock_floor'] == 1
-for name in ('snapshot.json', 'writer.lock'):
+for name in ('snapshot.json', 'writer.lock', 'payload.sha256'):
     assert stat.S_IMODE((root / name).stat().st_mode) == 0o600
+# The engine created this directory itself through the public surface.
+store = root / 'store'
+info = store.lstat()
+assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+assert stat.S_IMODE(info.st_mode) == 0o700
+assert {p.name for p in store.iterdir()} == {'snapshot.json'}
+published = store / 'snapshot.json'
+assert stat.S_IMODE(published.stat().st_mode) == 0o600
+assert published.read_bytes() == payload
+# Recompute the digest the way the Python host does, so a Matrix checkpoint
+# envelope and a store.py envelope cannot silently disagree. ENI-0003 makes
+# byte-identical envelopes the precondition for porting the host.
+assert (root / 'payload.sha256').read_bytes().decode('ascii') == \
+    hashlib.sha256(payload).hexdigest()
 fd = os.open(root / 'writer.lock', os.O_RDWR | os.O_NOFOLLOW)
 try:
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

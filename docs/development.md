@@ -105,8 +105,10 @@ backups, keys, and credentials out of Git; use synthetic fixtures in tests.
 ## Source conventions
 
 General library gaps found while building Enigma should feed back into NIL.
-The first contribution adds POSIX durable byte publication, directory sync, and
-context-owned advisory file locks, with Ny/Matrix VM and native checks. The
+The first contributions add POSIX durable byte publication, directory sync, and
+context-owned advisory file locks (NIL-0028), then owner-only directory
+creation, private-entry metadata verdicts, and `sha256_hex` (NIL-0029), each
+with paired Ny/Matrix VM, AOT, and JIT checks. The
 [consumer contract](../validation/nil-io/README.md) exercises those primitives
 against a real Enigma revoked-grant payload using a matching development SDK:
 
@@ -114,10 +116,13 @@ against a real Enigma revoked-grant payload using a matching development SDK:
 NIL_SDK=/absolute/path/to/matching/development-sdk ./scripts/test-nil-io.sh
 ```
 
-The existing host remains the qualified persistence path. Private-directory and
-metadata primitives, a supported standalone integrity-hash API, and a complete
-host port still need separate qualification. Preserve database policy in Enigma;
-only general mechanisms belong in the framework standard library.
+The existing host remains the qualified persistence path. The library surfaces
+the port depends on are now qualified; the checkpoint envelope, commit
+orchestration, and recovery path are not ported, and a complete host port still
+needs separate qualification. See
+[ENI-0003](design/ENI-0003-matrix-durable-host.md) for the staging. Preserve
+database policy in Enigma; only general mechanisms belong in the framework
+standard library.
 
 Use `book enigma.<area>` with files under `src/enigma/` and `.matrix` extensions.
 Prefer explicit imports and named call arguments. Put `begin test` declarations

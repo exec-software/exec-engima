@@ -1,6 +1,7 @@
 # ENI-0003: The Matrix durable host
 
-Status: design record for retiring the Python host. Nothing ported yet.
+Status: design record for retiring the Python host. Phase A is implemented
+in the framework; no part of the host is ported yet.
 
 ## What this decides
 
@@ -52,16 +53,22 @@ before publication, not after.
 
 ## Required library surfaces
 
-Three mechanisms remain outside Matrix. Each already exists and is exercised
-inside the framework; none needs new algorithm work. Each needs a supported
-surface in the NIL standard library, with VM and native providers and paired
-Ny/Matrix route evidence, following NIL-0028's pattern:
+Three mechanisms were outside Matrix. Each already existed and was exercised
+inside the framework, so none needed new algorithm work, only a supported
+surface with VM and native providers and paired Ny/Matrix route evidence. The
+framework's NIL-0029 adds them as four functions in `nil.std.io`, since
+inspection splits by entry kind:
 
-| Need | Existing mechanism | Status |
+| Need | Surface | Status |
 | --- | --- | --- |
-| Private directory creation | `nil::detail::create_private_directory` (0700, or a protected Windows owner DACL) | Internal helper; no language surface |
-| Owner and mode inspection | the regular/owner/single-link/`0600` predicate in `secure_file_io.cpp` | Internal helper; no language surface |
-| Standalone SHA-256 | `portable_sha256` in `common/content_digest.hpp` | Host-side only, used for module fingerprints |
+| Private directory creation | `create_private_directory` | Qualified in NIL-0029 |
+| Owner and mode inspection | `is_private_regular_file`, `is_private_directory` | Qualified in NIL-0029 |
+| Standalone SHA-256 | `sha256_hex` | Qualified in NIL-0029 |
+
+The predicates return `Result<bool, text>` so recovery can tell an uninspectable
+entry from one inspected and judged unsafe. That distinction matters here: ENI-0002
+requires missing or invalid primary state to fail closed rather than bootstrap, and
+a surface that reported absence as "not private" would erase the difference.
 
 `nilstd/experimental/security/hash.ny` appears to offer `sha256` already. It
 does not: it is declared through `@interop` against `nilstd/native/`, which is
@@ -92,9 +99,13 @@ the outcome this record exists to avoid.
 
 Each phase is independently qualified and leaves a working tree.
 
-- **A — surfaces.** Land the three library surfaces above with paired Ny/Matrix
-  route evidence. Extend `validation/nil-io` to exercise each. No Enigma
-  behavior changes.
+- **A — surfaces.** *Done.* The surfaces above landed with paired Ny/Matrix
+  evidence across textual and binary VM, AOT, and JIT. `validation/nil-io`
+  exercises each one and now also computes the digest a checkpoint envelope
+  would carry, with the host oracle recomputing it through Python's `hashlib`.
+  So the digest half of byte-identical envelopes is already checked rather than
+  assumed; phase B still has to match the envelope's JSON members and bytes.
+  No Enigma behavior changed.
 - **B — envelope.** Implement envelope construction, digest verification, and
   strict decode in Matrix. Prove byte-identical output against `store.py` for
   the same payloads, including the corruption and malformed-envelope cases.
