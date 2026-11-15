@@ -19,15 +19,15 @@ defines the persistence host and restart contract.
 the Python placeholder host is retired.
 [ENI-0004: Authority capacity across restarts](ENI-0004-authority-capacity.md)
 decides how retired grants are reclaimed without recycling an identifier.
-[ENI-0005: Evidence retention](ENI-0005-evidence-retention.md) proposes the same
-treatment for the event log; it is a design record with nothing implemented.
+[ENI-0005: Evidence retention](ENI-0005-evidence-retention.md) gives the event
+log the same treatment, reclaiming retracted evidence on request.
 
 | Area | Current behavior |
 | --- | --- |
 | Evidence | Exact text propositions with independently attributable support and opposition. |
 | History | Assertions and withdrawals append events; as-of reads preserve prior views. |
 | Resolution | `unknown`, `supported`, `contradicted`, or `contested` after a complete scan; `incomplete` when work runs out. |
-| Bounds | 128 events per store, explicit work/output limits, and separate evidence-list completeness. |
+| Bounds | 128 retained events per store, explicit work/output limits, and separate evidence-list completeness. An invoked compaction reclaims retracted evidence; a view below the resulting horizon answers `incomplete`. |
 | Authority | Trusted-host entity/session grants with exact audience, scope, rights, logical expiry, attenuation, and live ancestor revocation. |
 | Client | Typed operations and a discoverable surface under [`ext/enigma-client`](../../ext/enigma-client/README.md), outside `nil.std`. |
 | Persistence | Matrix checkpoint codec and validated recovery, with POSIX host locking, private files, atomic replacement, and sync-before-receipt ordering. |
@@ -87,11 +87,12 @@ persistence guide](../persistence.md).
 2. **Richer evidence semantics:** evaluate typed values, causal dependencies,
    derived conclusions, and changes that invalidate them. Define how authority
    and provenance propagate before exposing cross-scope reasoning.
-3. **Persistence beyond the bounded checkpoint:** authority reclamation is done
-   ([ENI-0004](ENI-0004-authority-capacity.md)); the 128-event log still has no
-   retention story. Define evidence compaction that keeps as-of reads honest,
-   migrations, backup/restore, durable replay/idempotency, externally anchored
-   rollback detection, and broader filesystem qualification.
+3. **Persistence beyond the bounded checkpoint:** authority reclamation
+   ([ENI-0004](ENI-0004-authority-capacity.md)) and evidence retention
+   ([ENI-0005](ENI-0005-evidence-retention.md)) are done. Define migrations,
+   backup and restore, which is where history wanted after compaction has to
+   come from, durable replay/idempotency, externally anchored rollback
+   detection, and broader filesystem qualification.
 4. **Human language surface:** design bounded Matrix-inspired syntax that compiles
    into the same typed operations and authority checks. A parser must not execute
    arbitrary Matrix or grant authority from text.

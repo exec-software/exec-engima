@@ -113,7 +113,10 @@ and then claim that old authority has been recovered safely.
 - Resolution distinguishes support, opposition, disagreement, and absence of
   evidence. A work-limited scan reports `incomplete`; an evidence-list cap is
   reported separately. Neither evidence state nor a source label proves truth.
-- Each store holds at most 128 events. Proposition components and source text
+- Each store holds at most 128 retained events; a caller with withdrawal
+  authority may compact retracted evidence, after which a historical read
+  below the resulting horizon reports `incomplete` rather than an answer the
+  store can no longer substantiate. Proposition components and source text
   are bounded at 256 units under NIL's text-length operation; scope and entity
   labels are bounded at 128. The authority registry retains at most 256 grants,
   including revoked and retired rows. Recovery and re-admission can exhaust this

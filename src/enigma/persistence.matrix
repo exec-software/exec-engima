@@ -228,19 +228,34 @@ valid_state receives snapshot as durable_state returns boolean begin paragraph
             end when
         end when
     end repeat
+    !!! ENI-0005: the clock and the number of retained events are no longer
+    !!! the same quantity. The ceiling bounds what is held; the clock only
+    !!! has to stay ahead of it and above the horizon.
     value revision is store.revision_value
-    when revision is less than 0 or revision is greater than 128 then
+    value held is the length of store.event_ids
+    when held is less than 0 or held is greater than 128 or revision is less than held or
+        store.retained_from is less than 0 or store.retained_from is greater than revision then
         give no
     end when
-    when (the length of store.event_kinds) does not equal revision or (the length of store.subjects) does not equal revision or
-        (the length of store.relations) does not equal revision or (the length of store.objects) does not equal revision or
-        (the length of store.polarities) does not equal revision or (the length of store.sources) does not equal revision or
-        (the length of store.entities) does not equal revision or (the length of store.sessions) does not equal revision or
-        (the length of store.targets) does not equal revision then
+    when (the length of store.event_kinds) does not equal held or (the length of store.subjects) does not equal held or
+        (the length of store.relations) does not equal held or (the length of store.objects) does not equal held or
+        (the length of store.polarities) does not equal held or (the length of store.sources) does not equal held or
+        (the length of store.entities) does not equal held or (the length of store.sessions) does not equal held or
+        (the length of store.targets) does not equal held then
         give no
     end when
     variable withdrawn as array of number is []
-    repeat for index from 0 to revision
+    repeat for index from 0 to held
+        value event_id is store.event_ids at index
+        !!! An identifier sits within the clock and ascends with position,
+        !!! which is what keeps a withdrawal later than the assertion it names
+        !!! once compaction has left gaps between them.
+        when event_id is less than 1 or event_id is greater than revision then
+            give no
+        end when
+        when index is greater than 0 and event_id is at most (store.event_ids at (index minus 1)) then
+            give no
+        end when
         value event_kind is store.event_kinds at index
         when not (valid_label with input being store.entities at index) or (store.sessions at index) is at most 0 then
             give no
@@ -254,12 +269,23 @@ valid_state receives snapshot as durable_state returns boolean begin paragraph
         end when
         when event_kind equals 2 then
             value target is store.targets at index
-            when target is less than 1 or target is greater than index or (store.subjects at index) does not equal "" or
+            when target is less than 1 or target is at least event_id or (store.subjects at index) does not equal "" or
                 (store.relations at index) does not equal "" or (store.objects at index) does not equal "" or
                 (store.sources at index) does not equal "" or (store.polarities at index) does not equal 0 then
                 give no
             end when
-            value target_index is target minus 1
+            !!! A retained withdrawal names a retained assertion. Compaction
+            !!! reclaims a pair together and never one half of one, so a
+            !!! dangling withdrawal is corrupt state rather than a gap.
+            variable target_index as number is minus 1
+            repeat for candidate from 0 to index
+                when (store.event_ids at candidate) equals target then
+                    set target_index to candidate
+                end when
+            end repeat
+            when target_index is less than 0 then
+                give no
+            end when
             when (store.event_kinds at target_index) does not equal 1 or
                 (store.entities at target_index) does not equal (store.entities at index) then
                 give no
@@ -291,7 +317,7 @@ public decode_state receives payload as text returns state_result begin paragrap
         give corrupt_state with nothing
     end when
     value root is parsed.unwrap with nothing
-    variable root_keys as array of text is ["schema", "database_id", "incarnation", "generation", "scope", "clock_floor", "next_grant_id", "retired_through", "grants", "events"]
+    variable root_keys as array of text is ["schema", "database_id", "incarnation", "generation", "scope", "clock_floor", "next_grant_id", "retired_through", "revision", "retained_from", "grants", "events"]
     when not (exact_object with node being root, keys being root_keys) then
         give corrupt_state with nothing
     end when
@@ -304,13 +330,18 @@ public decode_state receives payload as text returns state_result begin paragrap
     value floor is reader.number_field with node being root, key being "clock_floor"
     value issued_next is reader.number_field with node being root, key being "next_grant_id"
     value retired is reader.number_field with node being root, key being "retired_through"
+    value revision is reader.number_field with node being root, key being "revision"
+    value retained is reader.number_field with node being root, key being "retained_from"
     !!! ENI-0004 added the issued identifier, next_grant_id and
     !!! retired_through, so a v1 checkpoint is a different shape. It is refused
     !!! rather than upgraded in place: migrations are future work, and this
     !!! engine holds synthetic data, which is the right time to make a schema
     !!! break explicit instead of guessing at an upgrade that cannot be tried
     !!! against anything real.
-    when schema does not equal "enigma.state.v2" or not reader.valid then
+    !!! ENI-0005 added the event identifier, the explicit revision and the
+    !!! retention horizon. The revision can no longer be derived from the
+    !!! number of events, because compaction makes them diverge.
+    when schema does not equal "enigma.state.v3" or not reader.valid then
         give corrupt_state with nothing
     end when
     value snapshot is new_state with database_id being database_id, incarnation being incarnation, scope being scope
@@ -318,6 +349,7 @@ public decode_state receives payload as text returns state_result begin paragrap
     set snapshot.authority.clock_floor to floor
     set snapshot.authority.next_grant_id to issued_next
     set snapshot.authority.retired_through to retired
+    set snapshot.store.retained_from to retained
     value grants is field_value with node being root, key being "grants"
     value grant_count is reader.array_length with node being grants
     value events is field_value with node being root, key being "events"
@@ -351,7 +383,7 @@ public decode_state receives payload as text returns state_result begin paragrap
         append (reader.boolean_field with node being row, key being "revoked") to snapshot.authority.revoked
     end repeat
     set snapshot.authority.grant_count to grant_count
-    variable event_keys as array of text is ["kind", "subject", "relation", "object_value", "polarity", "source", "entity", "session", "target"]
+    variable event_keys as array of text is ["id", "kind", "subject", "relation", "object_value", "polarity", "source", "entity", "session", "target"]
     repeat for index from 0 to event_count
         value found is array_get with events, index
         when found.is_error with nothing then
@@ -365,6 +397,7 @@ public decode_state receives payload as text returns state_result begin paragrap
         when not (exact_object with node being row, keys being event_keys) then
             give corrupt_state with nothing
         end when
+        append (reader.number_field with node being row, key being "id") to snapshot.store.event_ids
         append (reader.number_field with node being row, key being "kind") to snapshot.store.event_kinds
         append (reader.text_field with node being row, key being "subject") to snapshot.store.subjects
         append (reader.text_field with node being row, key being "relation") to snapshot.store.relations
@@ -375,7 +408,9 @@ public decode_state receives payload as text returns state_result begin paragrap
         append (reader.number_field with node being row, key being "session") to snapshot.store.sessions
         append (reader.number_field with node being row, key being "target") to snapshot.store.targets
     end repeat
-    set snapshot.store.revision_value to event_count
+    !!! Read, not derived: compaction removes events without rewinding the
+    !!! clock, so the count is no longer the revision.
+    set snapshot.store.revision_value to revision
     when not reader.valid or not (valid_state with snapshot being snapshot) then
         give corrupt_state with nothing
     end when
@@ -437,7 +472,7 @@ public encode_state receives snapshot as durable_state returns encoding_result b
     end when
     value writer is build state_writer with valid being yes
     variable root is (new_object with nothing).unwrap with nothing
-    set root to writer.set_text with node being root, key being "schema", input being "enigma.state.v2"
+    set root to writer.set_text with node being root, key being "schema", input being "enigma.state.v3"
     set root to writer.set_text with node being root, key being "database_id", input being snapshot.database_id
     set root to writer.set_text with node being root, key being "incarnation", input being snapshot.incarnation
     set root to writer.set_number with node being root, key being "generation", amount being snapshot.generation
@@ -445,6 +480,8 @@ public encode_state receives snapshot as durable_state returns encoding_result b
     set root to writer.set_number with node being root, key being "clock_floor", amount being snapshot.authority.clock_floor
     set root to writer.set_number with node being root, key being "next_grant_id", amount being snapshot.authority.next_grant_id
     set root to writer.set_number with node being root, key being "retired_through", amount being snapshot.authority.retired_through
+    set root to writer.set_number with node being root, key being "revision", amount being snapshot.store.revision_value
+    set root to writer.set_number with node being root, key being "retained_from", amount being snapshot.store.retained_from
     variable grants is (new_array with nothing).unwrap with nothing
     repeat for index from 0 to snapshot.authority.grant_count
         variable row is (new_object with nothing).unwrap with nothing
@@ -462,8 +499,9 @@ public encode_state receives snapshot as durable_state returns encoding_result b
     end repeat
     set root to writer.set_node with node being root, key being "grants", replacement being grants
     variable events is (new_array with nothing).unwrap with nothing
-    repeat for index from 0 to snapshot.store.revision_value
+    repeat for index from 0 to (the length of snapshot.store.event_ids)
         variable row is (new_object with nothing).unwrap with nothing
+        set row to writer.set_number with node being row, key being "id", amount being snapshot.store.event_ids at index
         set row to writer.set_number with node being row, key being "kind", amount being snapshot.store.event_kinds at index
         set row to writer.set_text with node being row, key being "subject", input being snapshot.store.subjects at index
         set row to writer.set_text with node being row, key being "relation", input being snapshot.store.relations at index

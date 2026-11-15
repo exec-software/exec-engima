@@ -21,8 +21,9 @@ not automatically contradict each other; no relation cardinality or inference
 system is assumed.
 
 An evidence store represents one access scope. Assertions and withdrawals append
-events; successful events advance that store's revision by one. Assertion IDs are
-their assertion-event revisions. A withdrawal names an existing, active assertion
+events; successful events advance that store's revision by one, and the revision
+only ever increases. Assertion IDs are their assertion-event revisions and are
+never renumbered, so compaction leaves gaps rather than shifting identifiers. A withdrawal names an existing, active assertion
 by the same entity and requires separate withdrawal authority. Failed operations
 leave evidence and revision unchanged. Independent stores have independent IDs,
 revisions, capacity, and scan budgets.
@@ -85,7 +86,9 @@ not by direct calls on these in-memory handles.
 Revocation is checked on each synchronous call, with no prepare/commit window.
 Direct host memory access is outside this API policy boundary.
 
-Hard bounds are 128 events per store and 256 text units per proposition component
+Hard bounds are 128 *retained* events per store, which an invoked compaction
+reclaims retracted evidence from ([ENI-0005](ENI-0005-evidence-retention.md)),
+and 256 text units per proposition component
 or source (using the NIL text length operation). Scope labels are at most 128.
 Resolve budgets meter inspected log events; each event may also require bounded
 withdrawal membership checks, so this is not a CPU-time quota. Every store is

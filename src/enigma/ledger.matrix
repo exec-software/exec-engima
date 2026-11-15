@@ -82,6 +82,13 @@ end paragraph
 public evidence_store begin class
     field scope_name as text
     field revision_value as number
+    !!! ENI-0005. revision_value stays the logical clock and the as-of
+    !!! coordinate, so it only increases and nothing is ever renumbered.
+    !!! event_ids carries each retained event's issued revision, and
+    !!! retained_from is the horizon below which a view can no longer be
+    !!! reconstructed, where a read answers incomplete instead of guessing.
+    field retained_from as number
+    field event_ids as array of number
     field event_kinds as array of number
     field subjects as array of text
     field relations as array of text
@@ -92,8 +99,27 @@ public evidence_store begin class
     field sessions as array of number
     field targets as array of number
 
+    !!! The row holding an event, or minus 1. Compaction leaves gaps, so a
+    !!! revision is no longer an offset into these arrays.
+    position_of receives event_id as number returns number begin paragraph
+        repeat for index from 0 to (the length of my event_ids)
+            when (my event_ids at index) equals event_id then
+                give index
+            end when
+        end repeat
+        give minus 1
+    end paragraph
+
+    !!! What the ceiling and the scan budget both count: events still held,
+    !!! rather than every event ever written.
+    public retained_count returns number begin paragraph
+        give the length of my event_ids
+    end paragraph
+
     append_event receives claim as proposition, polarity as number, source as text,
         entity as text, session as number, kind as number, target as number returns number begin paragraph
+        set my revision_value to my revision_value plus 1
+        append my revision_value to my event_ids
         append kind to my event_kinds
         append claim.subject to my subjects
         append claim.relation to my relations
@@ -103,7 +129,6 @@ public evidence_store begin class
         append entity to my entities
         append session to my sessions
         append target to my targets
-        set my revision_value to my revision_value plus 1
         give my revision_value
     end paragraph
 
@@ -125,7 +150,7 @@ public evidence_store begin class
         when expected_revision does not equal minus 1 and expected_revision does not equal my revision_value then
             give failed_write with code being "conflict"
         end when
-        when my revision_value is at least 128 then
+        when (my retained_count with nothing) is at least 128 then
             give failed_write with code being "capacity"
         end when
         variable polarity as number is 0
@@ -150,24 +175,30 @@ public evidence_store begin class
         when expected_revision does not equal minus 1 and expected_revision does not equal my revision_value then
             give failed_write with code being "conflict"
         end when
-        when my revision_value is greater than access.work_limit then
+        !!! The scan walks retained events, so that is what the budget bounds.
+        when (my retained_count with nothing) is greater than access.work_limit then
             give failed_write with code being "limit"
         end when
         when evidence_id is greater than my revision_value then
             give failed_write with code being "denied"
         end when
-        value position is evidence_id minus 1
+        value position is my position_of with event_id being evidence_id
+        !!! A reclaimed assertion cannot be withdrawn again. It was already
+        !!! retired, which is precisely why it was reclaimable.
+        when position is less than 0 then
+            give failed_write with code being "denied"
+        end when
         when (my event_kinds at position) does not equal 1 or (my entities at position) does not equal access.entity then
             give failed_write with code being "denied"
         end when
-        variable index as number is evidence_id
-        repeat while index is less than my revision_value
+        variable index as number is position plus 1
+        repeat while index is less than (my retained_count with nothing)
             when (my event_kinds at index) equals 2 and (my targets at index) equals evidence_id then
                 give failed_write with code being "denied"
             end when
             set index to index plus 1
         end repeat
-        when my revision_value is at least 128 then
+        when (my retained_count with nothing) is at least 128 then
             give failed_write with code being "capacity"
         end when
         value blank is empty_proposition with nothing
@@ -202,11 +233,19 @@ public evidence_store begin class
 
         variable withdrawn as array of number is []
         variable ids as array of number is []
-        variable index as number is snapshot minus 1
+        !!! Retained events stay in ascending revision order, so walking the
+        !!! array backwards still visits newer events first, which is what
+        !!! lets a withdrawal be seen before the assertion it retires.
+        variable index as number is (my retained_count with nothing) minus 1
         variable inspected as number is 0
         variable supporting as number is 0
         variable opposing as number is 0
         repeat while index is at least 0 and inspected is less than max_work
+            !!! Later than the requested view, so outside it. Skipping spends
+            !!! no budget: the caller asked for a smaller history, not more work.
+            when (my event_ids at index) is greater than snapshot then
+                set index to index minus 1
+            otherwise
             set inspected to inspected plus 1
             when (my event_kinds at index) equals 2 then
                 append (my targets at index) to withdrawn
@@ -214,7 +253,7 @@ public evidence_store begin class
             when (my event_kinds at index) equals 1 then
                 when (my subjects at index) equals claim.subject and (my relations at index) equals claim.relation and
                     (my objects at index) equals claim.object_value then
-                    value evidence_id is index plus 1
+                    value evidence_id is my event_ids at index
                     variable active as boolean is yes
                     repeat for each target in withdrawn
                         when target equals evidence_id then
@@ -234,8 +273,14 @@ public evidence_store begin class
                 end when
             end when
             set index to index minus 1
+            end when
         end repeat
-        value complete is index is less than 0
+        !!! A finished scan is an exact answer only when the store can still
+        !!! reconstruct the requested view. Revision 0 needs no reconstruction:
+        !!! nothing had been written, so an empty snapshot stays exact whatever
+        !!! has since been reclaimed.
+        value reconstructable is snapshot equals 0 or snapshot is at least my retained_from
+        value complete is index is less than 0 and reconstructable
         variable state as text is "incomplete"
         when complete then
             set state to "unknown"
@@ -255,6 +300,92 @@ public evidence_store begin class
             supporting being supporting, opposing being opposing, evidence_ids being ids
     end paragraph
 
+    !!! ENI-0005. Reclaim every assertion whose withdrawal is also still held.
+    !!! Such a pair contributes nothing to any view at or after the
+    !!! withdrawal, so removing both changes no answer the store still claims
+    !!! to give. An assertion nobody retracted is never reclaimed, whatever
+    !!! its age: it is still evidence.
+    !!!
+    !!! The horizon moves only as far as it must, to the newest withdrawal
+    !!! reclaimed. A view at or after that is still exact; one below it is
+    !!! conservatively refused, because a reclaimed assertion may have been
+    !!! active there.
+    public compact receives authority as authority_registry, caller as access_context,
+        grant_id as number, scope as text returns write_receipt begin paragraph
+        !!! Compaction forgets history, so it is a write and needs withdrawal
+        !!! authority rather than read authority.
+        value access is authority.authorize with caller being caller, grant_id being grant_id,
+            scope being scope, operation being 4
+        when access.code does not equal "ok" or scope does not equal my scope_name then
+            give failed_write with code being "denied"
+        end when
+        when (my retained_count with nothing) is greater than access.work_limit then
+            give failed_write with code being "limit"
+        end when
+        variable doomed as array of number is []
+        variable horizon as number is my retained_from
+        repeat for index from 0 to (the length of my event_ids)
+            when (my event_kinds at index) equals 2 then
+                value target is my targets at index
+                when (my position_of with event_id being target) is at least 0 then
+                    append target to doomed
+                    append (my event_ids at index) to doomed
+                    when (my event_ids at index) is greater than horizon then
+                        set horizon to my event_ids at index
+                    end when
+                end when
+            end when
+        end repeat
+        variable kept_ids as array of number is []
+        variable kept_kinds as array of number is []
+        variable kept_subjects as array of text is []
+        variable kept_relations as array of text is []
+        variable kept_objects as array of text is []
+        variable kept_polarities as array of number is []
+        variable kept_sources as array of text is []
+        variable kept_entities as array of text is []
+        variable kept_sessions as array of number is []
+        variable kept_targets as array of number is []
+        repeat for index from 0 to (the length of my event_ids)
+            value event_id is my event_ids at index
+            variable reclaim as boolean is no
+            repeat for each condemned in doomed
+                when condemned equals event_id then
+                    set reclaim to yes
+                end when
+            end repeat
+            when not reclaim then
+                append event_id to kept_ids
+                append (my event_kinds at index) to kept_kinds
+                append (my subjects at index) to kept_subjects
+                append (my relations at index) to kept_relations
+                append (my objects at index) to kept_objects
+                append (my polarities at index) to kept_polarities
+                append (my sources at index) to kept_sources
+                append (my entities at index) to kept_entities
+                append (my sessions at index) to kept_sessions
+                append (my targets at index) to kept_targets
+            end when
+        end repeat
+        value reclaimed is (the length of my event_ids) minus (the length of kept_ids)
+        set my event_ids to kept_ids
+        set my event_kinds to kept_kinds
+        set my subjects to kept_subjects
+        set my relations to kept_relations
+        set my objects to kept_objects
+        set my polarities to kept_polarities
+        set my sources to kept_sources
+        set my entities to kept_entities
+        set my sessions to kept_sessions
+        set my targets to kept_targets
+        set my retained_from to horizon
+        !!! The revision does not advance: compaction removes history rather
+        !!! than adding to it, and an identifier a caller holds keeps meaning
+        !!! what it meant.
+        give build write_receipt with code being "ok", revision being my revision_value,
+            evidence_id being reclaimed, event_id being my retained_from
+    end paragraph
+
     public inspect receives authority as authority_registry, caller as access_context,
         grant_id as number, scope as text, evidence_id as number, as_of as number returns inspect_receipt begin paragraph
         value access is authority.authorize with caller being caller, grant_id being grant_id,
@@ -272,21 +403,28 @@ public evidence_store begin class
         when snapshot is greater than my revision_value then
             give failed_inspect with code being "invalid"
         end when
-        when snapshot is greater than access.work_limit then
+        when (my retained_count with nothing) is greater than access.work_limit then
             give failed_inspect with code being "limit"
         end when
         when evidence_id is greater than snapshot then
             give failed_inspect with code being "not_found"
         end when
-        value position is evidence_id minus 1
+        value position is my position_of with event_id being evidence_id
+        !!! A reclaimed assertion reads as absent. ENI-0005 leaves telling
+        !!! that apart from one that never existed to later work, so this
+        !!! deliberately does not claim to know which it was.
+        when position is less than 0 then
+            give failed_inspect with code being "not_found"
+        end when
         when (my event_kinds at position) does not equal 1 then
             give failed_inspect with code being "not_found"
         end when
         variable withdrawn_at as number is 0
-        variable index as number is evidence_id
-        repeat while index is less than snapshot
-            when (my event_kinds at index) equals 2 and (my targets at index) equals evidence_id then
-                set withdrawn_at to index plus 1
+        variable index as number is position plus 1
+        repeat while index is less than (my retained_count with nothing)
+            when (my event_ids at index) is at most snapshot and
+                (my event_kinds at index) equals 2 and (my targets at index) equals evidence_id then
+                set withdrawn_at to my event_ids at index
             end when
             set index to index plus 1
         end repeat
@@ -300,7 +438,8 @@ public evidence_store begin class
 end class
 
 public open_store receives scope as text returns evidence_store begin paragraph
-    give build evidence_store with scope_name being scope, revision_value being 0, event_kinds being [],
+    give build evidence_store with scope_name being scope, revision_value being 0,
+        retained_from being 0, event_ids being [], event_kinds being [],
         subjects being [], relations being [], objects being [], polarities being [], sources being [],
         entities being [], sessions being [], targets being []
 end paragraph
@@ -558,4 +697,147 @@ capacity_failure_does_not_append_partial_evidence begin test
     expect result.supporting equals 128
     expect result.opposing equals 0
     expect result.complete
+end test
+
+note if_test_mode
+other_claim returns proposition begin paragraph
+    give build proposition with subject being "release:enigma", relation being "ready", object_value being "later"
+end paragraph
+
+note suite "enigma.evidence"
+churn_no_longer_spends_the_ceiling_and_a_kept_assertion_still_counts begin test
+    !!! ENI-0005. Before compaction the ceiling counted every write, so a
+    !!! store that revised a claim repeatedly filled up and refused, which is
+    !!! the workload the engine exists to serve. This asserts and withdraws
+    !!! far past 128 while a separate assertion nobody retracted stays live.
+    value authority is open_authority with nothing
+    value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 15, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller is test_context with entity being "agent:a"
+    value store is open_store with scope being "work"
+    value kept is store.assert_claim with authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", claim being (other_claim with nothing),
+        supports being yes, source being "test:kept", expected_revision being minus 1
+    expect kept.code equals "ok"
+    variable cycle as number is 0
+    repeat while cycle is less than 300
+        value asserted is store.assert_claim with authority being authority, caller being caller,
+            grant_id being issued.grant_id, scope being "work", claim being (test_claim with nothing),
+            supports being yes, source being "test:churn", expected_revision being minus 1
+        expect asserted.code equals "ok"
+        value retracted is store.withdraw with authority being authority, caller being caller,
+            grant_id being issued.grant_id, scope being "work", evidence_id being asserted.evidence_id,
+            expected_revision being minus 1
+        expect retracted.code equals "ok"
+        value reclaimed is store.compact with authority being authority, caller being caller,
+            grant_id being issued.grant_id, scope being "work"
+        expect reclaimed.code equals "ok"
+        !!! Each cycle writes two events and both come back.
+        expect reclaimed.evidence_id equals 2
+        set cycle to cycle plus 1
+    end repeat
+    !!! The clock advanced past the ceiling; what is held did not.
+    expect store.revision_value equals 601
+    expect (store.retained_count with nothing) equals 1
+    !!! The assertion nobody retracted is still evidence, and still resolves.
+    value current is store.resolve with authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", claim being (other_claim with nothing),
+        as_of being minus 1, max_work being 128, max_evidence being 128
+    expect current.state equals "supported"
+    expect current.supporting equals 1
+    expect current.complete
+    expect (current.evidence_ids at 0) equals 1
+    !!! The churned claim is gone, and saying so is exact: every pair that
+    !!! held it was retired before it was reclaimed.
+    value churned is store.resolve with authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", claim being (test_claim with nothing),
+        as_of being minus 1, max_work being 128, max_evidence being 128
+    expect churned.state equals "unknown"
+    expect churned.complete
+end test
+
+note suite "enigma.evidence"
+a_view_below_the_horizon_is_incomplete_rather_than_wrong begin test
+    value authority is open_authority with nothing
+    value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 15, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller is test_context with entity being "agent:a"
+    value store is open_store with scope being "work"
+    value claim is test_claim with nothing
+    value asserted is store.assert_claim with authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", claim being claim, supports being yes,
+        source being "test:first", expected_revision being 0
+    expect asserted.code equals "ok"
+    value retracted is store.withdraw with authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", evidence_id being asserted.evidence_id,
+        expected_revision being 1
+    expect retracted.code equals "ok"
+    !!! Before compaction the historical view is exact: supported at 1.
+    value before is store.resolve with authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", claim being claim, as_of being 1,
+        max_work being 128, max_evidence being 128
+    expect before.state equals "supported"
+    expect before.complete
+    value reclaimed is store.compact with authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work"
+    expect reclaimed.code equals "ok"
+    expect reclaimed.evidence_id equals 2
+    !!! The horizon moved only as far as the newest reclaimed withdrawal.
+    expect store.retained_from equals 2
+    !!! That same view can no longer be reconstructed, so it is refused rather
+    !!! than answered unknown with every appearance of confidence.
+    value after is store.resolve with authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", claim being claim, as_of being 1,
+        max_work being 128, max_evidence being 128
+    expect after.state equals "incomplete"
+    expect not after.complete
+    !!! At or above the horizon the answer is exact again.
+    value current is store.resolve with authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", claim being claim, as_of being 2,
+        max_work being 128, max_evidence being 128
+    expect current.state equals "unknown"
+    expect current.complete
+    !!! Revision 0 needs no reconstruction: nothing had been written.
+    value origin is store.resolve with authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", claim being claim, as_of being 0,
+        max_work being 128, max_evidence being 128
+    expect origin.state equals "unknown"
+    expect origin.complete
+    !!! A reclaimed assertion reads as absent and cannot be withdrawn again.
+    expect (store.inspect with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", evidence_id being 1, as_of being minus 1).code equals "not_found"
+    expect (store.withdraw with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", evidence_id being 1, expected_revision being minus 1).code equals "denied"
+end test
+
+note suite "enigma.evidence"
+compaction_keeps_an_unwithdrawn_assertion_and_needs_authority begin test
+    value authority is open_authority with nothing
+    value writer is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 15, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    !!! Read-only authority cannot forget history.
+    value reader is authority.install with entity being "agent:b", session being 1, scope being "work",
+        operations being 1, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller is test_context with entity being "agent:a"
+    value onlooker is test_context with entity being "agent:b"
+    value store is open_store with scope being "work"
+    value claim is test_claim with nothing
+    expect (store.assert_claim with authority being authority, caller being caller, grant_id being writer.grant_id,
+        scope being "work", claim being claim, supports being yes, source being "test:kept",
+        expected_revision being minus 1).code equals "ok"
+    expect (store.compact with authority being authority, caller being onlooker,
+        grant_id being reader.grant_id, scope being "work").code equals "denied"
+    !!! Nothing is reclaimed, because nothing was retracted. Age is not a
+    !!! reason to forget an assertion.
+    value nothing_to_do is store.compact with authority being authority, caller being caller,
+        grant_id being writer.grant_id, scope being "work"
+    expect nothing_to_do.code equals "ok"
+    expect nothing_to_do.evidence_id equals 0
+    expect (store.retained_count with nothing) equals 1
+    expect store.retained_from equals 0
+    value current is store.resolve with authority being authority, caller being caller,
+        grant_id being writer.grant_id, scope being "work", claim being claim, as_of being minus 1,
+        max_work being 128, max_evidence being 128
+    expect current.state equals "supported"
+    expect current.complete
 end test

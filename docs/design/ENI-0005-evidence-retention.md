@@ -1,6 +1,8 @@
 # ENI-0005: Evidence retention without a wrong historical answer
 
-Status: design record. Nothing implemented yet.
+Status: implemented. Events carry their issued revision, `compact` reclaims
+matched pairs under withdrawal authority, a view below the horizon answers
+`incomplete`, and the checkpoint schema is `enigma.state.v3`.
 
 ## The ceiling counts writes, not evidence
 

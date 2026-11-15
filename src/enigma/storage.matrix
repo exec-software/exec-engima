@@ -164,7 +164,9 @@ dispatch receives snapshot as durable_state, request as `Value` returns `Value` 
     when operation equals "support" or operation equals "oppose" then
         set right to 2
     end when
-    when operation equals "withdraw" then
+    !!! Compaction forgets history, so it needs withdrawal authority rather
+    !!! than read authority.
+    when operation equals "withdraw" or operation equals "compact" then
         set right to 4
     end when
     when operation equals "delegate" then
@@ -209,6 +211,22 @@ dispatch receives snapshot as durable_state, request as `Value` returns `Value` 
         set receipt to put_number with node being receipt, key being "revision", input being removed.revision
         set receipt to put_number with node being receipt, key being "evidence_id", input being removed.evidence_id
         give put_number with node being receipt, key being "event_id", input being removed.event_id
+    end when
+
+    !!! ENI-0005. Compaction is invoked, never automatic: it trades history
+    !!! for capacity, and doing that silently on every restart would lose the
+    !!! ability to explain what was known before it.
+    when operation equals "compact" then
+        value keys as array of text is ["op", "instance", "caller", "grant_id"]
+        when not (exact_object with node being request, keys being keys) then
+            give base_receipt with code being "invalid"
+        end when
+        value reclaimed is snapshot.store.compact with authority being snapshot.authority,
+            caller being caller, grant_id being grant_id, scope being snapshot.store.scope_name
+        variable receipt is bound_receipt with code being reclaimed.code, snapshot being snapshot
+        set receipt to put_number with node being receipt, key being "revision", input being reclaimed.revision
+        set receipt to put_number with node being receipt, key being "reclaimed", input being reclaimed.evidence_id
+        give put_number with node being receipt, key being "retained_from", input being reclaimed.event_id
     end when
 
     when operation equals "inspect" then

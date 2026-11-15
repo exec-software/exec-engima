@@ -374,6 +374,58 @@ class StorageRecoveryTests(unittest.TestCase):
                     for grant_id in issued:
                         self.assertEqual(self.resolve(reopened, grant_id)["code"], "denied")
 
+    def test_compaction_reclaims_churn_and_refuses_a_view_it_cannot_rebuild(self) -> None:
+        # ENI-0005 end to end. The 300-cycle proof lives in the
+        # enigma.evidence suite; what needs a real host here is that an
+        # invoked compaction survives the codec and a restart, and that the
+        # horizon it set still refuses an older view afterwards.
+        for target in TARGETS:
+            with self.subTest(target=target), tempfile.TemporaryDirectory(prefix="enigma-recovery-") as temporary:
+                path = Path(temporary) / "db"
+                self.initialize(path, target)
+                with HostSession(path, target) as host:
+                    grant = self.install(host)["grant_id"]
+                    kept = host.request({"op": "support", "caller": caller(), "grant_id": grant,
+                                         "claim": CLAIM, "source": "synthetic:kept",
+                                         "expected_revision": -1})
+                    self.assertEqual(kept["code"], "ok")
+                    churn = host.request({"op": "oppose", "caller": caller(), "grant_id": grant,
+                                          "claim": CLAIM, "source": "synthetic:churn",
+                                          "expected_revision": -1})
+                    self.assertEqual(churn["code"], "ok")
+                    gone = host.request({"op": "withdraw", "caller": caller(), "grant_id": grant,
+                                         "evidence_id": churn["evidence_id"], "expected_revision": -1})
+                    self.assertEqual(gone["code"], "ok")
+                    before = len(checkpoint(path)[1]["events"])
+                    compacted = host.request({"op": "compact", "caller": caller(), "grant_id": grant})
+                    self.assertEqual(compacted["code"], "ok")
+                    # The withdrawn pair goes; the assertion nobody retracted stays.
+                    self.assertEqual(compacted["reclaimed"], 2)
+                    self.assertEqual(compacted["retained_from"], gone["revision"])
+                    after = checkpoint(path)[1]
+                    self.assertEqual(len(after["events"]), before - 2)
+                    self.assertEqual(after["retained_from"], gone["revision"])
+                    # The clock did not rewind, so an identifier still means
+                    # what it meant.
+                    self.assertEqual(after["revision"], gone["revision"])
+                    self.assertEqual([row["id"] for row in after["events"]], [kept["evidence_id"]])
+                # The horizon survives a restart, and so does the refusal.
+                with HostSession(path, target) as reopened:
+                    live = self.resolve(reopened, grant)
+                    self.assertEqual(live["code"], "denied", "the old grant was retired by recovery")
+                    fresh = self.install(reopened, session=12)["grant_id"]
+                    holder = caller(session=12)
+                    current = self.resolve(reopened, fresh, who=holder)
+                    self.assertEqual(current["state"], "supported")
+                    self.assertTrue(current["complete"])
+                    # A view inside the reclaimed window cannot be rebuilt, so
+                    # it is refused rather than answered with confidence.
+                    stale = reopened.request({"op": "resolve", "caller": holder, "grant_id": fresh,
+                                              "claim": CLAIM, "as_of": 1, "max_work": 128,
+                                              "max_evidence": 128})
+                    self.assertEqual(stale["state"], "incomplete")
+                    self.assertFalse(stale["complete"])
+
     def test_restoring_older_coherent_checkpoint_does_not_reactivate_session(self) -> None:
         for target in TARGETS:
             with self.subTest(target=target), tempfile.TemporaryDirectory(prefix="enigma-recovery-") as temporary:

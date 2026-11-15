@@ -77,7 +77,8 @@ after revocation: denied
 
 `--surface` emits a NILData description of the companion operations and hard
 limits. The client accepts typed requests; it does not need to generate query
-strings. Stores currently hold at most 128 events, and all data disappears at
+strings. Stores currently hold at most 128 retained events, with retracted
+evidence reclaimable on request, and all data disappears at
 process exit in this embedded demo.
 
 ## Persistence and recovery
