@@ -1,7 +1,9 @@
 # Persistent stores
 
 The POSIX host makes the bounded Matrix engine persistent. Use this path for
-durable receipts; the direct `enigma.client` API remains an in-memory API.
+durable receipts over the host protocol; the direct `enigma.client` API remains
+an in-memory API. Matrix applications can also use the importable
+[durable application package](applications.md).
 The host and request stream are trusted embedding interfaces. Supplying an
 entity/session in JSON does not authenticate it.
 

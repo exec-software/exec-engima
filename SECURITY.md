@@ -2,8 +2,8 @@
 
 ## Current implementation
 
-Enigma has a bounded evidence engine, an embedded Matrix client, and a separate
-POSIX persistence host.
+Enigma has a bounded evidence engine, a volatile Matrix client, an importable
+durable Matrix session/client, and POSIX persistence hosts.
 The engine checks scoped grants before examining evidence requests, binds them
 to an exact entity/session and the audience `enigma`, and checks operation
 rights, logical expiry, limits, and live delegation ancestry. Delegation cannot
@@ -36,6 +36,14 @@ syncs the file, atomically replaces the canonical checkpoint, and syncs the
 database directory before returning the receipt. Initial creation also syncs
 the parent directory. An I/O or worker-protocol failure stops the session without
 a success receipt; no later request uses its uncertain in-memory state.
+
+The importable durable session uses that same commit implementation as the
+Matrix CLI. Every dispatch proves current runtime lock ownership; a cached
+active flag cannot survive loss of the lock. Close disables aliases before
+release, and storage/protocol failure poisons the owner and clears its payload.
+The typed application reply separates confirmed domain outcomes from failures
+whose effect may be unknown. There is no automatic retry or re-admission.
+See [ENI-0007](docs/design/ENI-0007-application-sessions.md).
 
 The single checkpoint retains evidence, permission definitions, delegation
 ancestry, revocation flags, nonreused ID counters, and the logical clock floor.

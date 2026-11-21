@@ -1,0 +1,297 @@
+book enigma.validation.durable_app
+
+read everything from nil.std.nildata
+read read_line, flush, release_file_lock from nil.std.io
+read arg_count, arg, set_current_directory from nil.std.system
+read create_database, open_database, durable_session from enigma.durable.session
+read connect, provision_for_host from enigma.durable.client
+read access_context from enigma.authority
+read proposition from enigma.ledger
+read any_pattern from enigma.discovery
+
+object_node returns `Value` begin paragraph
+    give (new_object with nothing).unwrap with nothing
+end paragraph
+
+put_text receives node as `Value`, key as text, input as text returns `Value` begin paragraph
+    give (object_set with node, key, (string_value with input).unwrap with nothing).unwrap with nothing
+end paragraph
+
+put_number receives node as `Value`, key as text, input as number returns `Value` begin paragraph
+    give (object_set with node, key, (integer_value with formatted "{input}").unwrap with nothing).unwrap with nothing
+end paragraph
+
+text_field receives node as `Value`, key as text returns text begin paragraph
+    value child is ((object_get with node, key).unwrap with nothing).unwrap with nothing
+    give (text_value with child).unwrap with nothing
+end paragraph
+
+number_field receives node as `Value`, key as text returns number begin paragraph
+    value child is ((object_get with node, key).unwrap with nothing).unwrap with nothing
+    give (as_i64 with child).unwrap with nothing
+end paragraph
+
+caller receives tick as number returns `Value` begin paragraph
+    variable result is put_text with node being (object_node with nothing), key being "entity", input being "probe:application"
+    set result to put_number with node being result, key being "session", input being 1
+    set result to put_text with node being result, key being "audience", input being "enigma"
+    give put_number with node being result, key being "tick", input being tick
+end paragraph
+
+provision receives owner as durable_session returns `Value` begin paragraph
+    variable request is put_text with node being (object_node with nothing), key being "op", input being "install"
+    set request to put_text with node being request, key being "instance", input being owner.incarnation
+    set request to put_text with node being request, key being "entity", input being "probe:application"
+    set request to put_number with node being request, key being "session", input being 1
+    set request to put_number with node being request, key being "operations", input being 7
+    set request to put_number with node being request, key being "expires", input being 1000
+    set request to put_number with node being request, key being "work_limit", input being 128
+    set request to put_number with node being request, key being "result_limit", input being 128
+    give put_number with node being request, key being "tick", input being 1
+end paragraph
+
+claim returns `Value` begin paragraph
+    variable result is put_text with node being (object_node with nothing), key being "subject", input being "application:probe"
+    set result to put_text with node being result, key being "relation", input being "status"
+    give put_text with node being result, key being "object_value", input being "ready"
+end paragraph
+
+write_request receives owner as durable_session, grant_id as number, revision as number, tick as number returns `Value` begin paragraph
+    variable request is put_text with node being (object_node with nothing), key being "op", input being "support"
+    set request to put_text with node being request, key being "instance", input being owner.incarnation
+    set request to (object_set with request, "caller", (caller with tick being tick)).unwrap with nothing
+    set request to put_number with node being request, key being "grant_id", input being grant_id
+    set request to (object_set with request, "claim", (claim with nothing)).unwrap with nothing
+    set request to put_text with node being request, key being "source", input being "synthetic:application"
+    give put_number with node being request, key being "expected_revision", input being revision
+end paragraph
+
+announce receives message as text returns nothing begin paragraph
+    say message
+    evaluate flush with nothing
+    give nothing
+end paragraph
+
+lifecycle receives directory as text returns override integer begin paragraph
+    value created is create_database with directory being directory, scope being "application"
+    expect created.code equals "created"
+    value owner is created.session
+    value alias is owner
+    value contended is open_database with directory being directory
+    expect contended.code equals "busy"
+    expect not contended.session.active
+    expect (owner.close with nothing) equals "closed"
+    expect (alias.dispatch with request being (object_node with nothing)).code equals "closed"
+    expect (owner.close with nothing) equals "closed"
+    value reopened is open_database with directory being directory
+    expect reopened.code equals "ready"
+    expect (reopened.session.close with nothing) equals "closed"
+    say "lifecycle-ok"
+    give 0
+end paragraph
+
+stale_owner receives directory as text returns override integer begin paragraph
+    value created is create_database with directory being directory, scope being "application"
+    expect created.code equals "created"
+    value owner is created.session
+    !!! Releasing through the public runtime API simulates a handle surviving
+    !!! its execution context. Production code has no fault switch for this.
+    expect (release_file_lock with token being owner.lock_token).unwrap with nothing
+    value successor is open_database with directory being directory
+    expect successor.code equals "ready"
+    expect successor.session.incarnation does not equal owner.incarnation
+    value refused is owner.dispatch with request being (provision with owner being owner)
+    expect refused.code equals "lock_lost"
+    expect owner.poisoned
+    expect owner.payload equals ""
+    expect (owner.close with nothing) equals "lock_error"
+    expect (owner.close with nothing) equals "closed"
+    value admitted is successor.session.dispatch with request being (provision with owner being successor.session)
+    expect admitted.code equals "ok"
+    expect (text_field with node being admitted.receipt, key being "code") equals "ok"
+    expect (successor.session.close with nothing) equals "closed"
+    say "stale-owner-ok"
+    give 0
+end paragraph
+
+failed_open receives directory as text returns override integer begin paragraph
+    value opened is open_database with directory being directory
+    expect opened.code equals "corrupt"
+    expect not opened.session.active
+    evaluate announce with message being "failed-open"
+    expect (read_line with nothing) equals "exit"
+    give 0
+end paragraph
+
+cwd_pin receives directory as text returns override integer begin paragraph
+    value created is create_database with directory being directory, scope being "application"
+    expect created.code equals "created"
+    value owner is created.session
+    expect (set_current_directory with path being "other").unwrap with nothing
+    value admitted is owner.dispatch with request being (provision with owner being owner)
+    expect admitted.code equals "ok"
+    expect (text_field with node being admitted.receipt, key being "code") equals "ok"
+    expect (owner.close with nothing) equals "closed"
+    say "cwd-pin-ok"
+    give 0
+end paragraph
+
+typed_caller receives entity as text, session_id as number, tick as number returns access_context begin paragraph
+    give build access_context with entity being entity, session being session_id, audience being "enigma", tick being tick
+end paragraph
+
+typed_operations receives directory as text returns override integer begin paragraph
+    value created is create_database with directory being directory, scope being "application"
+    expect created.code equals "created"
+    value owner is created.session
+    value admitted is provision_for_host with owner being owner, entity being "probe:typed", session_id being 1,
+        operations being 31, expires being 1000, work_limit being 128, result_limit being 128, tick being 1
+    expect admitted.confirmed
+    value client is connect with owner being owner, grant_id being admitted.receipt.grant_id
+    value selected is build proposition with subject being "application:typed", relation being "status", object_value being "ready"
+    value supported_reply is client.support with caller being (typed_caller with entity being "probe:typed", session_id being 1, tick being 2),
+        claim being selected, source being "synthetic:typed", expected_revision being 0
+    expect supported_reply.confirmed
+    value supported is supported_reply.receipt
+    expect supported.code equals "ok"
+    value opposed_reply is client.oppose with caller being (typed_caller with entity being "probe:typed", session_id being 1, tick being 3),
+        claim being selected, source being "synthetic:opposition", expected_revision being 1
+    expect opposed_reply.confirmed
+    value opposed is opposed_reply.receipt
+    expect opposed.code equals "ok"
+    value withdrawn_reply is client.withdraw with caller being (typed_caller with entity being "probe:typed", session_id being 1, tick being 4),
+        evidence_id being opposed.evidence_id, expected_revision being 2
+    expect withdrawn_reply.confirmed
+    value withdrawn is withdrawn_reply.receipt
+    expect withdrawn.code equals "ok"
+    value historical_reply is client.resolve with caller being (typed_caller with entity being "probe:typed", session_id being 1, tick being 5),
+        claim being selected, as_of being 2, max_work being 128, max_evidence being 128
+    expect historical_reply.confirmed
+    value historical is historical_reply.receipt
+    expect historical.state equals "contested"
+    value inspected_reply is client.inspect with caller being (typed_caller with entity being "probe:typed", session_id being 1, tick being 6),
+        evidence_id being opposed.evidence_id, as_of being 2
+    expect inspected_reply.confirmed
+    value inspected is inspected_reply.receipt
+    expect inspected.code equals "ok"
+    expect inspected.evidence.withdrawn_at equals 0
+    value discovered_reply is client.discover with caller being (typed_caller with entity being "probe:typed", session_id being 1, tick being 7),
+        pattern being (any_pattern with nothing), as_of being minus 1, max_work being 128, max_evidence being 128
+    expect discovered_reply.confirmed
+    value discovered is discovered_reply.receipt
+    expect discovered.complete
+    expect discovered.matched equals 1
+    value delegated_reply is client.delegate with caller being (typed_caller with entity being "probe:typed", session_id being 1, tick being 8),
+        entity being "probe:child", session_id being 2, operations being 1, expires being 500,
+        work_limit being 128, result_limit being 128
+    expect delegated_reply.confirmed
+    value delegated is delegated_reply.receipt
+    expect delegated.code equals "ok"
+    value child is connect with owner being owner, grant_id being delegated.grant_id
+    value child_read_reply is child.resolve with caller being (typed_caller with entity being "probe:child", session_id being 2, tick being 9),
+        claim being selected, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect child_read_reply.confirmed
+    value child_read is child_read_reply.receipt
+    expect child_read.state equals "supported"
+    value revoked_child is child.revoke with caller being (typed_caller with entity being "probe:child", session_id being 2, tick being 10)
+    expect revoked_child.confirmed
+    expect revoked_child.receipt.code equals "ok"
+    value compacted_reply is client.compact with caller being (typed_caller with entity being "probe:typed", session_id being 1, tick being 11)
+    expect compacted_reply.confirmed
+    value compacted is compacted_reply.receipt
+    expect compacted.code equals "ok"
+    expect compacted.reclaimed equals 2
+    expect compacted.retained_from equals 3
+    value revoked_client is client.revoke with caller being (typed_caller with entity being "probe:typed", session_id being 1, tick being 12)
+    expect revoked_client.confirmed
+    expect revoked_client.receipt.code equals "ok"
+    value denied_reply is client.resolve with caller being (typed_caller with entity being "probe:typed", session_id being 1, tick being 13),
+        claim being selected, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect denied_reply.confirmed
+    value denied is denied_reply.receipt
+    expect denied.code equals "denied"
+    expect (owner.close with nothing) equals "closed"
+    value closed is client.support with caller being (typed_caller with entity being "probe:typed", session_id being 1, tick being 14),
+        claim being selected, source being "synthetic:after-close", expected_revision being minus 1
+    expect not closed.confirmed
+    expect closed.failure.code equals "closed"
+    expect not closed.failure.outcome_unknown
+    say "typed-operations-ok"
+    give 0
+end paragraph
+
+hold receives directory as text returns override integer begin paragraph
+    value created is create_database with directory being directory, scope being "application"
+    expect created.code equals "created"
+    value owner is created.session
+    value installed is owner.dispatch with request being (provision with owner being owner)
+    expect installed.code equals "ok"
+    value grant_id is number_field with node being installed.receipt, key being "grant_id"
+    value first is owner.dispatch with request being (write_request with owner being owner,
+        grant_id being grant_id, revision being 0, tick being 2)
+    expect first.code equals "ok"
+    expect (text_field with node being first.receipt, key being "code") equals "ok"
+    evaluate announce with message being "ready"
+    expect (read_line with nothing) equals "write"
+    value failed is owner.dispatch with request being (write_request with owner being owner,
+        grant_id being grant_id, revision being 1, tick being 3)
+    expect failed.code equals "storage_error"
+    expect failed.outcome_unknown
+    expect owner.poisoned
+    expect owner.payload equals ""
+    evaluate announce with message being "outcome-unknown"
+    expect (read_line with nothing) equals "again"
+    value refused is owner.dispatch with request being (provision with owner being owner)
+    expect refused.code equals "poisoned"
+    expect refused.outcome_unknown
+    evaluate announce with message being "poisoned"
+    expect (read_line with nothing) equals "close"
+    expect (owner.close with nothing) equals "closed"
+    evaluate announce with message being "closed"
+    expect (read_line with nothing) equals "exit"
+    give 0
+end paragraph
+
+full_read receives directory as text returns override integer begin paragraph
+    value opened is open_database with directory being directory
+    expect opened.code equals "ready"
+    value owner is opened.session
+    value admitted is provision_for_host with owner being owner, entity being "probe:reader", session_id being 2,
+        operations being 1, expires being 1000, work_limit being 128, result_limit being 128, tick being 10
+    expect admitted.confirmed
+    expect admitted.receipt.code equals "ok"
+    value client is connect with owner being owner, grant_id being admitted.receipt.grant_id
+    value found is client.discover with caller being (typed_caller with entity being "probe:reader", session_id being 2, tick being 11),
+        pattern being (any_pattern with nothing), as_of being minus 1, max_work being 128, max_evidence being 128
+    expect found.confirmed
+    expect found.receipt.code equals "ok"
+    expect found.receipt.complete
+    expect found.receipt.evidence_complete
+    expect found.receipt.matched equals 128
+    expect (found.receipt.items.count with nothing) equals 128
+    repeat for index from 0 to 128
+        value report is (found.receipt.items.get with index being index).unwrap with nothing
+        expect report.id equals 128 minus index
+        expect (the length of report.source) equals 256
+        expect (the length of report.entity) equals 128
+        expect report.session equals 77
+        expect report.withdrawn_at equals 0
+    end repeat
+    expect (owner.close with nothing) equals "closed"
+    say "full-read-ok"
+    give 0
+end paragraph
+
+main returns override integer begin paragraph
+    expect (arg_count with nothing) equals 2
+    value mode is arg with index being 0
+    value directory is arg with index being 1
+    when mode equals "lifecycle" then give lifecycle with directory being directory end when
+    when mode equals "stale-owner" then give stale_owner with directory being directory end when
+    when mode equals "failed-open" then give failed_open with directory being directory end when
+    when mode equals "cwd-pin" then give cwd_pin with directory being directory end when
+    when mode equals "typed-operations" then give typed_operations with directory being directory end when
+    when mode equals "hold" then give hold with directory being directory end when
+    when mode equals "full-read" then give full_read with directory being directory end when
+    give 2
+end paragraph

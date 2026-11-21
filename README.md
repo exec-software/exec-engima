@@ -26,6 +26,9 @@ appends an event; earlier snapshots keep their original meaning.
   reads of history below the retention horizon report `incomplete`.
 - Interact through a typed Matrix companion library in
   [`ext/enigma-client`](ext/enigma-client/README.md), outside `nil.std`.
+- Embed a durable owner and typed application client through
+  [`ext/enigma-durable`](ext/enigma-durable/README.md), with explicit close and
+  distinct confirmed receipts and uncertain failures.
 - Preserve retained evidence, grant ancestry and revocations, issued counters,
   and the logical clock floor in one validated checkpoint. Recovery retires all
   prior session grants, reclaims their rows, and retains the retirement mark
@@ -41,9 +44,13 @@ policy fixture. Matrix fields are public: this is **not isolation against hostil
 code in the same process**. Context identity and fresh logical ticks come from
 the embedding host. There is no authentication, network listener, query parser,
 encryption, or native Anomalous integration. The direct embedded client remains
-volatile; durable acknowledgements come only through the separate storage host.
+volatile; durable acknowledgements come through a persistence host or the
+importable `enigma.durable` session/client.
 
 ## Build and run
+
+For application integration, start with [Using Enigma in applications](docs/applications.md)
+and the persistent Matrix package under `ext/enigma-durable`.
 
 Install or build a complete NIL SDK using the
 [development guide](docs/development.md). Discovery's optional text fields need
@@ -133,6 +140,7 @@ power-cut behavior has not been qualified.
 | `storage/` | Separate Matrix storage-worker project. |
 | `scripts/store.py` | POSIX locking, integrity envelope, sync barriers, and receipts. |
 | `ext/enigma-client/` | Companion Matrix library, tests, and standalone example. |
+| `ext/enigma-durable/` | Shared durable session, typed application API, and persistent example. |
 | `scripts/` | SDK selection, strict-bounds execution, and validation. |
 | [Design](docs/design/README.md) | Architecture, query direction, and first milestones. |
 | [Security](SECURITY.md) | Current limits, reporting, and intended threat boundaries. |

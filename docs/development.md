@@ -11,9 +11,10 @@ The upstream Linux prerequisites include a C++17 compiler, CMake 3.21 or newer,
 Python 3.12 or newer, LLVM development packages, and Pandoc. Follow upstream for
 the current dependency details and other platforms.
 
-Discovery requires the field-type canonicalization fix from NIL commit
-[`ebc4eb5`](https://github.com/exec-software/exec-nil-framework/commit/ebc4eb518156248cee9dbc6585d16ba09eb464f3),
-proposed with the storage additions in
+Durable application sessions require NIL's runtime lock-ownership query from
+[`dbb4379`](https://github.com/exec-software/exec-nil-framework/commit/dbb4379946f6800a79e485dcd890e8f5b0902b31).
+That revision also includes discovery's optional-text field fix from
+`ebc4eb5`. These changes are proposed in
 [NIL PR #42](https://github.com/exec-software/exec-nil-framework/pull/42).
 Earlier compilers can run the pattern on the VM but reject its optional text
 fields during native compilation. The version string alone does not identify
@@ -24,7 +25,7 @@ For example, build the pinned public source beside this project:
 ```sh
 git clone https://github.com/exec-software/exec-nil-framework.git ../exec-nil-framework
 cd ../exec-nil-framework
-git checkout ebc4eb518156248cee9dbc6585d16ba09eb464f3
+git checkout dbb4379946f6800a79e485dcd890e8f5b0902b31
 CMAKE_BUILD_PARALLEL_LEVEL=4 CTEST_PARALLEL_LEVEL=4 ./scripts/build-sdk.sh
 ```
 
@@ -60,6 +61,7 @@ From the Enigma project directory:
 ./scripts/nil.sh run -- --surface
 ./scripts/build-storage.sh --target all
 ./scripts/test.sh
+./scripts/test-durable-client.sh
 ```
 
 The wrapper resolves the project independently of the invocation directory and
@@ -71,6 +73,12 @@ environment setting is a runtime check, not a database security boundary.
 runs Matrix tests, builds the requested execution targets, checks the CLI and
 package examples, and exercises Python filesystem faults and process recovery.
 Its default is both VM and native; `--target vm` or `--target native` selects one.
+
+`scripts/test-durable-client.sh` checks the importable durable package and its
+application example, then uses an external filesystem/process oracle to verify
+close, stale-owner refusal, factory cleanup, poisoned-session behavior, path
+pinning, and every typed operation on VM/native. It builds its own application
+fixtures and requires the lock-ownership API in the pinned SDK.
 
 ## Durable host
 

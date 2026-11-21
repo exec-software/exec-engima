@@ -1,0 +1,96 @@
+book enigma.durable_example
+
+read arg_count, arg from nil.std.system
+read access_context from enigma.authority
+read proposition from enigma.ledger
+read any_pattern from enigma.discovery
+read create_database, open_database, durable_session from enigma.durable.session
+read connect, provision_for_host from enigma.durable.client
+
+caller receives session_id as number, tick as number returns access_context begin paragraph
+    give build access_context with entity being "example:application", session being session_id,
+        audience being "enigma", tick being tick
+end paragraph
+
+close_failed receives owner as durable_session returns override integer begin paragraph
+    evaluate owner.close with nothing
+    give 1
+end paragraph
+
+create_example receives directory as text returns override integer begin paragraph
+    value opened is create_database with directory being directory, scope being "application"
+    when opened.code does not equal "created" then
+        give close_failed with owner being opened.session
+    end when
+    value owner is opened.session
+    !!! Provisioning belongs to the trusted application host after admission.
+    value issued is provision_for_host with owner being owner, entity being "example:application",
+        session_id being 1, operations being 7, expires being 1000, work_limit being 128,
+        result_limit being 128, tick being 1
+    when not issued.confirmed then give close_failed with owner being owner end when
+    value grant is issued.receipt
+    when grant.code does not equal "ok" then give close_failed with owner being owner end when
+    value client is connect with owner being owner, grant_id being grant.grant_id
+    value claim is build proposition with subject being "application:sample", relation being "status", object_value being "ready"
+    value written is client.support with caller being (caller with session_id being 1, tick being 2),
+        claim being claim, source being "synthetic:app", expected_revision being 0
+    when not written.confirmed then give close_failed with owner being owner end when
+    value receipt is written.receipt
+    when receipt.code does not equal "ok" or receipt.revision does not equal 1 or receipt.evidence_id does not equal 1 then
+        give close_failed with owner being owner
+    end when
+    when (owner.close with nothing) does not equal "closed" then give 1 end when
+    say "application-created"
+    give 0
+end paragraph
+
+reopen_example receives directory as text returns override integer begin paragraph
+    value opened is open_database with directory being directory
+    when opened.code does not equal "ready" then give close_failed with owner being opened.session end when
+    value owner is opened.session
+    !!! A saved numeric grant is not authority after recovery.
+    value retired is connect with owner being owner, grant_id being 1
+    value old_read is retired.discover with caller being (caller with session_id being 1, tick being 3),
+        pattern being (any_pattern with nothing), as_of being minus 1, max_work being 128, max_evidence being 128
+    when not old_read.confirmed then give close_failed with owner being owner end when
+    when old_read.receipt.code does not equal "denied" then give close_failed with owner being owner end when
+    value issued is provision_for_host with owner being owner, entity being "example:application",
+        session_id being 2, operations being 1, expires being 1000, work_limit being 128,
+        result_limit being 128, tick being 4
+    when not issued.confirmed then give close_failed with owner being owner end when
+    value grant is issued.receipt
+    when grant.code does not equal "ok" or grant.grant_id is at most 1 then give close_failed with owner being owner end when
+    value client is connect with owner being owner, grant_id being grant.grant_id
+    value found is client.discover with caller being (caller with session_id being 2, tick being 5),
+        pattern being (any_pattern with nothing), as_of being minus 1, max_work being 128, max_evidence being 128
+    when not found.confirmed then give close_failed with owner being owner end when
+    value reports is found.receipt
+    when reports.code does not equal "ok" or not reports.complete or not reports.evidence_complete or
+        reports.revision does not equal 1 or reports.matched does not equal 1 or (reports.items.count with nothing) does not equal 1 then
+        give close_failed with owner being owner
+    end when
+    value item is (reports.items.get with index being 0).unwrap with nothing
+    when item.subject does not equal "application:sample" or item.relation does not equal "status" or item.object_value does not equal "ready" or
+        item.source does not equal "synthetic:app" or item.session does not equal 1 then
+        give close_failed with owner being owner
+    end when
+    value revoked is client.revoke with caller being (caller with session_id being 2, tick being 6)
+    when not revoked.confirmed then give close_failed with owner being owner end when
+    when revoked.receipt.code does not equal "ok" then give close_failed with owner being owner end when
+    value denied is client.discover with caller being (caller with session_id being 2, tick being 7),
+        pattern being (any_pattern with nothing), as_of being 0, max_work being 128, max_evidence being 128
+    when not denied.confirmed then give close_failed with owner being owner end when
+    when denied.receipt.code does not equal "denied" then give close_failed with owner being owner end when
+    when (owner.close with nothing) does not equal "closed" then give 1 end when
+    say "application-reopened"
+    give 0
+end paragraph
+
+main returns override integer begin paragraph
+    when (arg_count with nothing) does not equal 2 then give 2 end when
+    value mode is arg with index being 0
+    value directory is arg with index being 1
+    when mode equals "create" then give create_example with directory being directory end when
+    when mode equals "reopen" then give reopen_example with directory being directory end when
+    give 2
+end paragraph

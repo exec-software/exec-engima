@@ -23,6 +23,8 @@ decides how retired grants are reclaimed without recycling an identifier.
 log the same treatment, reclaiming retracted evidence on request.
 [ENI-0006: Bounded evidence discovery](ENI-0006-bounded-evidence-discovery.md)
 adds exact-or-any patterns over active reports without requiring a known triple.
+[ENI-0007: Durable application sessions](ENI-0007-application-sessions.md)
+defines importable ownership, typed durable calls, and uncertain-failure handling.
 
 | Area | Current behavior |
 | --- | --- |
@@ -44,8 +46,8 @@ structured `limit` response when the required scan is too large.
 The implementation is Matrix, configured through NILData. The canonical surface
 is the typed evidence operation model. No text query parser, inference system,
 causal dependency model, network transport, or cryptography exists. Direct
-embedded use remains volatile; durable receipts are supplied only by the
-separate POSIX storage host.
+`enigma.client` use remains volatile; durable receipts come through a POSIX
+storage host or the importable session defined in ENI-0007.
 
 ## Authority direction
 

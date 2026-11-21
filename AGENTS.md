@@ -7,7 +7,8 @@ Enigma is a new database-engine seed written in Matrix. Read `README.md`,
 `docs/design/ENI-0003-matrix-durable-host.md`,
 `docs/design/ENI-0004-authority-capacity.md`,
 `docs/design/ENI-0005-evidence-retention.md`,
-`docs/design/ENI-0006-bounded-evidence-discovery.md`, and `SECURITY.md` before
+`docs/design/ENI-0006-bounded-evidence-discovery.md`,
+`docs/design/ENI-0007-application-sessions.md`, and `SECURITY.md` before
 extending the engine.
 
 - Implement engine behavior in Matrix under `src/enigma/` with `.matrix` files.
@@ -34,10 +35,15 @@ extending the engine.
   isolated NIL branch with paired Ny/Matrix runtime checks; keep database policy
   in Enigma and preserve unrelated sibling/parent work. Select matching tools
   and library sources through `NIL_SDK` when qualifying a new runtime.
-- Durable calls go through `scripts/store.py` and the separate Matrix storage
-  worker. The existing embedded client remains volatile. Never acknowledge a
+- Durable calls use `scripts/store.py` and its Matrix worker, or the shared
+  `enigma.durable.session` implementation under `ext/enigma-durable`; the Matrix
+  CLI is an adapter over that session. The existing `enigma.client` remains
+  volatile. Never acknowledge a
   durable operation before file fsync, atomic publication, and directory fsync.
 - Recovery must retire loaded session grants and commit the fresh incarnation
   before ready. Missing or invalid primary state never bootstraps or falls back.
 - Preserve authority counters, revocation history, and clock floors together
   with evidence. Reads and denials can change security state and need commits.
+- Durable application owners verify current runtime lock ownership on every
+  dispatch, close explicitly, and poison on protocol/storage failure. Typed
+  clients take fresh host context per call and never retry uncertain writes.

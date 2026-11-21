@@ -130,8 +130,9 @@ On opening a durable store, recovery retires all prior session grants and commit
 a fresh incarnation before `ready`. Old contexts and numeric grant IDs do not
 re-admit a caller; the trusted host must establish a current session and install
 new authority explicitly. The embedded client does not automatically attach to,
-recover, or commit a durable store. A transport-aware durable client can be added
-as a separate package surface later.
+recover, or commit a durable store. Use the separate
+[`enigma.durable` package](../enigma-durable/README.md) for an importable durable
+owner, fresh caller context per operation, and typed confirmation/failure replies.
 
 ## Run the example and tests
 

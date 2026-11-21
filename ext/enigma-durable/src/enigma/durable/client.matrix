@@ -1,0 +1,947 @@
+book enigma.durable.client
+
+read everything from nil.std.nildata
+read everything from nil.std.core.result
+read everything from nil.std.core.option
+read durable_session from enigma.durable.session
+read access_context, grant_receipt from enigma.authority
+read proposition, evidence_item, write_receipt, resolution, inspect_receipt from enigma.ledger
+read evidence_pattern, discovery_result from enigma.discovery
+read open_batch from enigma.evidence_batch
+read exact_object, field_value, field_text, field_number, field_boolean from enigma.persistence
+
+public durable_failure begin record
+    field code as text
+    field outcome_unknown as boolean
+end record
+
+!!! A direct typed aggregate keeps class-bearing discovery batches within
+!!! NIL's checked field-provenance profile. Every operation uses this shape.
+public durable_reply of type T begin record
+    field confirmed as boolean
+    field failure as durable_failure
+    field receipt as T
+end record
+
+public compaction_receipt begin record
+    field code as text
+    field revision as number
+    field reclaimed as number
+    field retained_from as number
+end record
+
+failure receives code as text, outcome_unknown as boolean returns durable_failure begin paragraph
+    give build durable_failure with code being code, outcome_unknown being outcome_unknown
+end paragraph
+
+!!! Request construction can fail before dispatch without touching the database.
+!!! Every dynamic value enters a checked NILData constructor, never JSON syntax.
+request_builder begin class
+    field node as `Value`
+    field valid as boolean
+
+    public put receives key as text, input as `Value` returns nothing begin paragraph
+        value changed is object_set with my node, key, input
+        when changed.is_error with nothing then
+            set my valid to no
+            give nothing
+        end when
+        set my node to changed.unwrap with nothing
+        give nothing
+    end paragraph
+
+    public put_text receives key as text, input as text returns nothing begin paragraph
+        value encoded is string_value with input
+        when encoded.is_error with nothing then
+            set my valid to no
+            give nothing
+        end when
+        evaluate my put with key being key, input being (encoded.unwrap with nothing)
+        give nothing
+    end paragraph
+
+    public put_number receives key as text, input as number returns nothing begin paragraph
+        value encoded is integer_value with formatted "{input}"
+        when encoded.is_error with nothing then
+            set my valid to no
+            give nothing
+        end when
+        evaluate my put with key being key, input being (encoded.unwrap with nothing)
+        give nothing
+    end paragraph
+
+    public child receives key as text, input as request_builder returns nothing begin paragraph
+        when not input.valid then
+            set my valid to no
+            give nothing
+        end when
+        evaluate my put with key being key, input being input.node
+        give nothing
+    end paragraph
+end class
+
+new_request returns request_builder begin paragraph
+    give build request_builder with node being (new_object with nothing).unwrap with nothing, valid being yes
+end paragraph
+
+caller_json receives caller as access_context returns request_builder begin paragraph
+    value node is new_request with nothing
+    evaluate node.put_text with key being "entity", input being caller.entity
+    evaluate node.put_number with key being "session", input being caller.session
+    evaluate node.put_text with key being "audience", input being caller.audience
+    evaluate node.put_number with key being "tick", input being caller.tick
+    give node
+end paragraph
+
+claim_json receives claim as proposition returns request_builder begin paragraph
+    value node is new_request with nothing
+    evaluate node.put_text with key being "subject", input being claim.subject
+    evaluate node.put_text with key being "relation", input being claim.relation
+    evaluate node.put_text with key being "object_value", input being claim.object_value
+    give node
+end paragraph
+
+put_selector receives node as request_builder, key as text, selector as Option of text returns nothing begin paragraph
+    consider selector
+        when Option.None then
+            evaluate node.put with key being key, input being (null_value with nothing).unwrap with nothing
+        when Option.Some holding exact then
+            evaluate node.put_text with key being key, input being exact
+    end consider
+    give nothing
+end paragraph
+
+pattern_json receives pattern as evidence_pattern returns request_builder begin paragraph
+    value node is new_request with nothing
+    evaluate put_selector with node being node, key being "subject", selector being pattern.subject
+    evaluate put_selector with node being node, key being "relation", selector being pattern.relation
+    evaluate put_selector with node being node, key being "object_value", selector being pattern.object_value
+    give node
+end paragraph
+
+perform receives owner as durable_session, request as request_builder returns Result of `Value`, durable_failure begin paragraph
+    when not request.valid then
+        give Result.Error holding (failure with code being "invalid_request", outcome_unknown being no)
+    end when
+    value transported is owner.dispatch with request being request.node
+    when transported.code does not equal "ok" then
+        give Result.Error holding (failure with code being transported.code, outcome_unknown being transported.outcome_unknown)
+    end when
+    give Result.Ok holding transported.receipt
+end paragraph
+
+protocol_failure receives owner as durable_session returns durable_failure begin paragraph
+    !!! The host may already have synchronized an effect. Refuse further calls
+    !!! rather than translate a malformed reply into a confirmed rejection.
+    evaluate owner.invalidate with nothing
+    give failure with code being "protocol_error", outcome_unknown being yes
+end paragraph
+
+known_rejection receives code as text returns boolean begin paragraph
+    give code equals "denied" or code equals "invalid" or code equals "conflict" or
+        code equals "limit" or code equals "capacity" or code equals "not_found"
+end paragraph
+
+reply_reader begin class
+    field valid as boolean
+
+    public read_text receives node as `Value`, key as text returns text begin paragraph
+        value parsed is field_text with node being node, key being key
+        when parsed.is_error with nothing then
+            set my valid to no
+            give ""
+        end when
+        give parsed.unwrap with nothing
+    end paragraph
+
+    public read_number receives node as `Value`, key as text returns number begin paragraph
+        value parsed is field_number with node being node, key being key
+        when parsed.is_error with nothing then
+            set my valid to no
+            give 0
+        end when
+        give parsed.unwrap with nothing
+    end paragraph
+
+    public read_flag receives node as `Value`, key as text returns boolean begin paragraph
+        value parsed is field_boolean with node being node, key being key
+        when parsed.is_error with nothing then
+            set my valid to no
+            give no
+        end when
+        give parsed.unwrap with nothing
+    end paragraph
+
+    public array_size receives node as `Value` returns number begin paragraph
+        value shape is kind with node
+        when shape.is_error with nothing then
+            set my valid to no
+            give 0
+        end when
+        when (shape.unwrap with nothing) does not equal "array" then
+            set my valid to no
+            give 0
+        end when
+        value amount is size with node
+        when amount.is_error with nothing then
+            set my valid to no
+            give 0
+        end when
+        value count is amount.unwrap with nothing
+        when count is greater than 128 then
+            set my valid to no
+            give 0
+        end when
+        give count
+    end paragraph
+end class
+
+success_shape receives node as `Value`, fields as array of text returns boolean begin paragraph
+    variable keys as array of text is ["code", "instance", "generation", "database_id"]
+    repeat for each key_name in fields
+        append key_name to keys
+    end repeat
+    when not (exact_object with node being node, keys being keys) then
+        give no
+    end when
+    value reader is build reply_reader with valid being yes
+    value code is reader.read_text with node being node, key being "code"
+    value instance is reader.read_text with node being node, key being "instance"
+    value database is reader.read_text with node being node, key being "database_id"
+    value generation is reader.read_number with node being node, key being "generation"
+    give reader.valid and code equals "ok" and (the length of instance) is greater than 0 and
+        (the length of instance) is at most 128 and (the length of database) is greater than 0 and
+        (the length of database) is at most 128 and generation is at least 0
+end paragraph
+
+failure_shape receives node as `Value`, fields as array of text returns boolean begin paragraph
+    value reader is build reply_reader with valid being yes
+    value code is reader.read_text with node being node, key being "code"
+    value instance is reader.read_text with node being node, key being "instance"
+    value generation is reader.read_number with node being node, key being "generation"
+    when not reader.valid or not (known_rejection with code being code) or instance does not equal "" or generation does not equal 0 then
+        give no
+    end when
+    value base_keys as array of text is ["code", "instance", "generation"]
+    when exact_object with node being node, keys being base_keys then
+        give yes
+    end when
+    variable keys as array of text is ["code", "instance", "generation"]
+    repeat for each key_name in fields
+        append key_name to keys
+    end repeat
+    give exact_object with node being node, keys being keys
+end paragraph
+
+reply_code receives node as `Value` returns text begin paragraph
+    value parsed is field_text with node being node, key being "code"
+    when parsed.is_error with nothing then
+        give ""
+    end when
+    give parsed.unwrap with nothing
+end paragraph
+
+has_field receives node as `Value`, key as text returns boolean begin paragraph
+    value found is object_has with node, key
+    give not (found.is_error with nothing) and (found.unwrap with nothing)
+end paragraph
+
+blank_evidence returns evidence_item begin paragraph
+    give build evidence_item with id being 0, subject being "", relation being "", object_value being "",
+        supports being no, source being "", entity being "", session being 0, asserted_at being 0, withdrawn_at being 0
+end paragraph
+
+blank_write receives code as text returns write_receipt begin paragraph
+    give build write_receipt with code being code, revision being 0, evidence_id being 0, event_id being 0
+end paragraph
+
+blank_resolution receives code as text returns resolution begin paragraph
+    give build resolution with code being code, state being "unavailable", revision being 0,
+        complete being no, evidence_complete being no, inspected being 0, supporting being 0, opposing being 0, evidence_ids being []
+end paragraph
+
+blank_discovery receives code as text returns discovery_result begin paragraph
+    give build discovery_result with code being code, revision being 0, retained_from being 0,
+        complete being no, evidence_complete being no, inspected being 0, matched being 0, items being (open_batch with nothing)
+end paragraph
+
+decode_write receives node as `Value` returns Result of write_receipt, text begin paragraph
+    value code is reply_code with node being node
+    value fields as array of text is ["revision", "evidence_id", "event_id"]
+    value reader is build reply_reader with valid being yes
+    when code does not equal "ok" then
+        when not (failure_shape with node being node, fields being fields) then give Result.Error holding "protocol_error" end when
+        when has_field with node being node, key being "revision" then
+            value revision is reader.read_number with node being node, key being "revision"
+            value evidence is reader.read_number with node being node, key being "evidence_id"
+            value event is reader.read_number with node being node, key being "event_id"
+            when not reader.valid or revision does not equal 0 or evidence does not equal 0 or event does not equal 0 then
+                give Result.Error holding "protocol_error"
+            end when
+        end when
+        give Result.Ok holding (blank_write with code being code)
+    end when
+    when not (success_shape with node being node, fields being fields) then give Result.Error holding "protocol_error" end when
+    value revision is reader.read_number with node being node, key being "revision"
+    value evidence is reader.read_number with node being node, key being "evidence_id"
+    value event is reader.read_number with node being node, key being "event_id"
+    when not reader.valid or revision is less than 1 or event does not equal revision or evidence is less than 1 or evidence is greater than event then
+        give Result.Error holding "protocol_error"
+    end when
+    give Result.Ok holding (build write_receipt with code being code, revision being revision, evidence_id being evidence, event_id being event)
+end paragraph
+
+decode_grant receives node as `Value` returns Result of grant_receipt, text begin paragraph
+    value code is reply_code with node being node
+    value fields as array of text is ["grant_id"]
+    value reader is build reply_reader with valid being yes
+    when code does not equal "ok" then
+        when not (failure_shape with node being node, fields being fields) then give Result.Error holding "protocol_error" end when
+        when has_field with node being node, key being "grant_id" then
+            value identifier is reader.read_number with node being node, key being "grant_id"
+            when not reader.valid or identifier does not equal 0 then give Result.Error holding "protocol_error" end when
+        end when
+        give Result.Ok holding (build grant_receipt with code being code, grant_id being 0)
+    end when
+    when not (success_shape with node being node, fields being fields) then give Result.Error holding "protocol_error" end when
+    value identifier is reader.read_number with node being node, key being "grant_id"
+    when not reader.valid or identifier is less than 1 then give Result.Error holding "protocol_error" end when
+    give Result.Ok holding (build grant_receipt with code being code, grant_id being identifier)
+end paragraph
+
+decode_compaction receives node as `Value` returns Result of compaction_receipt, text begin paragraph
+    value code is reply_code with node being node
+    value fields as array of text is ["revision", "reclaimed", "retained_from"]
+    value reader is build reply_reader with valid being yes
+    when code does not equal "ok" then
+        when not (failure_shape with node being node, fields being fields) then give Result.Error holding "protocol_error" end when
+        when has_field with node being node, key being "revision" then
+            value revision is reader.read_number with node being node, key being "revision"
+            value reclaimed is reader.read_number with node being node, key being "reclaimed"
+            value horizon is reader.read_number with node being node, key being "retained_from"
+            when not reader.valid or revision does not equal 0 or reclaimed does not equal 0 or horizon does not equal 0 then give Result.Error holding "protocol_error" end when
+        end when
+        give Result.Ok holding (build compaction_receipt with code being code, revision being 0, reclaimed being 0, retained_from being 0)
+    end when
+    when not (success_shape with node being node, fields being fields) then give Result.Error holding "protocol_error" end when
+    value revision is reader.read_number with node being node, key being "revision"
+    value reclaimed is reader.read_number with node being node, key being "reclaimed"
+    value horizon is reader.read_number with node being node, key being "retained_from"
+    when not reader.valid or revision is less than 0 or reclaimed is less than 0 or reclaimed is greater than 128 or
+        horizon is less than 0 or horizon is greater than revision then give Result.Error holding "protocol_error" end when
+    give Result.Ok holding (build compaction_receipt with code being code, revision being revision, reclaimed being reclaimed, retained_from being horizon)
+end paragraph
+
+read_evidence receives reader as reply_reader, node as `Value` returns evidence_item begin paragraph
+    value keys as array of text is ["id", "subject", "relation", "object_value", "supports", "source", "entity", "session", "asserted_at", "withdrawn_at"]
+    when not (exact_object with node being node, keys being keys) then set reader.valid to no end when
+    give build evidence_item with id being (reader.read_number with node being node, key being "id"),
+        subject being (reader.read_text with node being node, key being "subject"),
+        relation being (reader.read_text with node being node, key being "relation"),
+        object_value being (reader.read_text with node being node, key being "object_value"),
+        supports being (reader.read_flag with node being node, key being "supports"),
+        source being (reader.read_text with node being node, key being "source"),
+        entity being (reader.read_text with node being node, key being "entity"),
+        session being (reader.read_number with node being node, key being "session"),
+        asserted_at being (reader.read_number with node being node, key being "asserted_at"),
+        withdrawn_at being (reader.read_number with node being node, key being "withdrawn_at")
+end paragraph
+
+valid_evidence receives item as evidence_item, revision as number returns boolean begin paragraph
+    give item.id is greater than 0 and item.asserted_at equals item.id and item.id is at most revision and
+        item.session is greater than 0 and (the length of item.entity) is greater than 0 and (the length of item.entity) is at most 128 and
+        (the length of item.subject) is greater than 0 and (the length of item.subject) is at most 256 and
+        (the length of item.relation) is greater than 0 and (the length of item.relation) is at most 256 and
+        (the length of item.object_value) is greater than 0 and (the length of item.object_value) is at most 256 and
+        (the length of item.source) is greater than 0 and (the length of item.source) is at most 256 and
+        (item.withdrawn_at equals 0 or (item.withdrawn_at is greater than item.id and item.withdrawn_at is at most revision))
+end paragraph
+
+is_blank_evidence receives item as evidence_item returns boolean begin paragraph
+    give item.id equals 0 and item.subject equals "" and item.relation equals "" and item.object_value equals "" and
+        not item.supports and item.source equals "" and item.entity equals "" and item.session equals 0 and
+        item.asserted_at equals 0 and item.withdrawn_at equals 0
+end paragraph
+
+decode_inspection receives node as `Value` returns Result of inspect_receipt, text begin paragraph
+    value code is reply_code with node being node
+    value fields as array of text is ["revision", "evidence"]
+    value reader is build reply_reader with valid being yes
+    when code does not equal "ok" then
+        when not (failure_shape with node being node, fields being fields) then give Result.Error holding "protocol_error" end when
+        when has_field with node being node, key being "revision" then
+            value revision is reader.read_number with node being node, key being "revision"
+            value evidence is read_evidence with reader being reader, node being (field_value with node being node, key being "evidence")
+            when not reader.valid or revision does not equal 0 or not (is_blank_evidence with item being evidence) then give Result.Error holding "protocol_error" end when
+        end when
+        give Result.Ok holding (build inspect_receipt with code being code, revision being 0, evidence being (blank_evidence with nothing))
+    end when
+    when not (success_shape with node being node, fields being fields) then give Result.Error holding "protocol_error" end when
+    value revision is reader.read_number with node being node, key being "revision"
+    value item is read_evidence with reader being reader, node being (field_value with node being node, key being "evidence")
+    when not reader.valid or revision is less than 0 or not (valid_evidence with item being item, revision being revision) then give Result.Error holding "protocol_error" end when
+    give Result.Ok holding (build inspect_receipt with code being code, revision being revision, evidence being item)
+end paragraph
+
+read_ids receives reader as reply_reader, node as `Value`, revision as number returns array of number begin paragraph
+    value count is reader.array_size with node being node
+    variable gathered as array of number is []
+    variable previous as number is 0
+    repeat for index from 0 to count
+        value fetched is array_get with node, index
+        when fetched.is_error with nothing then
+            set reader.valid to no
+        otherwise
+            value optional is fetched.unwrap with nothing
+            when optional.is_none with nothing then
+                set reader.valid to no
+            otherwise
+                value element is optional.unwrap with nothing
+                value shape is kind with element
+                value amount is as_i64 with element
+                when shape.is_error with nothing or amount.is_error with nothing then
+                    set reader.valid to no
+                otherwise
+                    value identifier is amount.unwrap with nothing
+                    when (shape.unwrap with nothing) does not equal "integer" or identifier is less than 1 or
+                        identifier is greater than revision or (index is greater than 0 and identifier is at least previous) then
+                        set reader.valid to no
+                    end when
+                    append identifier to gathered
+                    set previous to identifier
+                end when
+            end when
+        end when
+    end repeat
+    give gathered
+end paragraph
+
+decode_resolution receives node as `Value` returns Result of resolution, text begin paragraph
+    value code is reply_code with node being node
+    value fields as array of text is ["state", "revision", "complete", "evidence_complete", "inspected", "supporting", "opposing", "evidence_ids"]
+    value reader is build reply_reader with valid being yes
+    when code does not equal "ok" then
+        when not (failure_shape with node being node, fields being fields) then give Result.Error holding "protocol_error" end when
+        when has_field with node being node, key being "revision" then
+            value state is reader.read_text with node being node, key being "state"
+            value revision is reader.read_number with node being node, key being "revision"
+            value complete is reader.read_flag with node being node, key being "complete"
+            value evidence_complete is reader.read_flag with node being node, key being "evidence_complete"
+            value inspected is reader.read_number with node being node, key being "inspected"
+            value supporting is reader.read_number with node being node, key being "supporting"
+            value opposing is reader.read_number with node being node, key being "opposing"
+            value ids is reader.array_size with node being (field_value with node being node, key being "evidence_ids")
+            when not reader.valid or state does not equal "unavailable" or revision does not equal 0 or complete or evidence_complete or
+                inspected does not equal 0 or supporting does not equal 0 or opposing does not equal 0 or ids does not equal 0 then give Result.Error holding "protocol_error" end when
+        end when
+        give Result.Ok holding (blank_resolution with code being code)
+    end when
+    when not (success_shape with node being node, fields being fields) then give Result.Error holding "protocol_error" end when
+    value state is reader.read_text with node being node, key being "state"
+    value revision is reader.read_number with node being node, key being "revision"
+    value complete is reader.read_flag with node being node, key being "complete"
+    value evidence_complete is reader.read_flag with node being node, key being "evidence_complete"
+    value inspected is reader.read_number with node being node, key being "inspected"
+    value supporting is reader.read_number with node being node, key being "supporting"
+    value opposing is reader.read_number with node being node, key being "opposing"
+    value ids is read_ids with reader being reader, node being (field_value with node being node, key being "evidence_ids"), revision being revision
+    when not reader.valid or revision is less than 0 or inspected is less than 0 or inspected is greater than 128 or
+        supporting is less than 0 or opposing is less than 0 or supporting plus opposing is greater than inspected or
+        evidence_complete does not equal (complete and (the length of ids) equals supporting plus opposing) then give Result.Error holding "protocol_error" end when
+    variable expected as text is "incomplete"
+    when complete then
+        set expected to "unknown"
+        when supporting is greater than 0 then set expected to "supported" end when
+        when opposing is greater than 0 then set expected to "contradicted" end when
+        when supporting is greater than 0 and opposing is greater than 0 then set expected to "contested" end when
+    end when
+    when state does not equal expected or (the length of ids) is greater than supporting plus opposing then give Result.Error holding "protocol_error" end when
+    give Result.Ok holding (build resolution with code being code, state being state, revision being revision, complete being complete,
+        evidence_complete being evidence_complete, inspected being inspected, supporting being supporting, opposing being opposing, evidence_ids being ids)
+end paragraph
+
+discovery_decode begin record
+    field valid as boolean
+    field receipt as enigma.discovery.discovery_result
+end record
+
+bad_discovery_decode returns discovery_decode begin paragraph
+    give build discovery_decode with valid being no, receipt being (blank_discovery with code being "protocol_error")
+end paragraph
+
+decode_discovery receives node as `Value` returns discovery_decode begin paragraph
+    value code is reply_code with node being node
+    value fields as array of text is ["revision", "retained_from", "complete", "evidence_complete", "inspected", "matched", "items"]
+    when code does not equal "ok" then
+        value no_fields as array of text is []
+        when not (failure_shape with node being node, fields being no_fields) then give bad_discovery_decode with nothing end when
+        give build discovery_decode with valid being yes, receipt being (blank_discovery with code being code)
+    end when
+    when not (success_shape with node being node, fields being fields) then give bad_discovery_decode with nothing end when
+    value reader is build reply_reader with valid being yes
+    value revision is reader.read_number with node being node, key being "revision"
+    value horizon is reader.read_number with node being node, key being "retained_from"
+    value complete is reader.read_flag with node being node, key being "complete"
+    value evidence_complete is reader.read_flag with node being node, key being "evidence_complete"
+    value inspected is reader.read_number with node being node, key being "inspected"
+    value matched is reader.read_number with node being node, key being "matched"
+    value rows is field_value with node being node, key being "items"
+    value count is reader.array_size with node being rows
+    value items is open_batch with nothing
+    variable previous as number is 0
+    repeat for index from 0 to count
+        value fetched is array_get with rows, index
+        when fetched.is_error with nothing then
+            set reader.valid to no
+        otherwise
+            value optional is fetched.unwrap with nothing
+            when optional.is_none with nothing then
+                set reader.valid to no
+            otherwise
+                value item is read_evidence with reader being reader, node being (optional.unwrap with nothing)
+                when not (valid_evidence with item being item, revision being revision) or item.withdrawn_at does not equal 0 or (index is greater than 0 and item.id is at least previous) then
+                    set reader.valid to no
+                end when
+                set previous to item.id
+                when not (items.push with item being item) then set reader.valid to no end when
+            end when
+        end when
+    end repeat
+    when not reader.valid or revision is less than 0 or horizon is less than 0 or inspected is less than 0 or inspected is greater than 128 or
+        matched is less than count or matched is greater than inspected or
+        evidence_complete does not equal (complete and count equals matched) or
+        (complete and revision does not equal 0 and revision is less than horizon) then give bad_discovery_decode with nothing end when
+    when revision equals 0 and (not complete or not evidence_complete or matched does not equal 0 or inspected does not equal 0) then give bad_discovery_decode with nothing end when
+    give build discovery_decode with valid being yes, receipt being (build discovery_result with code being code, revision being revision, retained_from being horizon,
+        complete being complete, evidence_complete being evidence_complete, inspected being inspected, matched being matched, items being items)
+end paragraph
+
+selector_matches receives selector as Option of text, content as text returns boolean begin paragraph
+    consider selector
+        when Option.None then give yes
+        when Option.Some holding exact then give content equals exact
+    end consider
+end paragraph
+
+pattern_matches receives pattern as evidence_pattern, item as evidence_item returns boolean begin paragraph
+    give (selector_matches with selector being pattern.subject, content being item.subject) and
+        (selector_matches with selector being pattern.relation, content being item.relation) and
+        (selector_matches with selector being pattern.object_value, content being item.object_value)
+end paragraph
+
+write_confirmed receives receipt as enigma.ledger.write_receipt returns durable_reply of enigma.ledger.write_receipt begin paragraph
+    give build durable_reply of enigma.ledger.write_receipt with confirmed being yes,
+        failure being (failure with code being "", outcome_unknown being no), receipt being receipt
+end paragraph
+
+write_failed receives issue as durable_failure returns durable_reply of enigma.ledger.write_receipt begin paragraph
+    give build durable_reply of enigma.ledger.write_receipt with confirmed being no,
+        failure being issue, receipt being (blank_write with code being issue.code)
+end paragraph
+
+resolution_confirmed receives receipt as enigma.ledger.resolution returns durable_reply of enigma.ledger.resolution begin paragraph
+    give build durable_reply of enigma.ledger.resolution with confirmed being yes,
+        failure being (failure with code being "", outcome_unknown being no), receipt being receipt
+end paragraph
+
+resolution_failed receives issue as durable_failure returns durable_reply of enigma.ledger.resolution begin paragraph
+    give build durable_reply of enigma.ledger.resolution with confirmed being no,
+        failure being issue, receipt being (blank_resolution with code being issue.code)
+end paragraph
+
+inspection_confirmed receives receipt as enigma.ledger.inspect_receipt returns durable_reply of enigma.ledger.inspect_receipt begin paragraph
+    give build durable_reply of enigma.ledger.inspect_receipt with confirmed being yes,
+        failure being (failure with code being "", outcome_unknown being no), receipt being receipt
+end paragraph
+
+inspection_failed receives issue as durable_failure returns durable_reply of enigma.ledger.inspect_receipt begin paragraph
+    give build durable_reply of enigma.ledger.inspect_receipt with confirmed being no,
+        failure being issue, receipt being (build inspect_receipt with code being issue.code, revision being 0, evidence being (blank_evidence with nothing))
+end paragraph
+
+discovery_confirmed receives receipt as enigma.discovery.discovery_result returns durable_reply of enigma.discovery.discovery_result begin paragraph
+    give build durable_reply of enigma.discovery.discovery_result with confirmed being yes,
+        failure being (failure with code being "", outcome_unknown being no), receipt being receipt
+end paragraph
+
+discovery_failed receives issue as durable_failure returns durable_reply of enigma.discovery.discovery_result begin paragraph
+    give build durable_reply of enigma.discovery.discovery_result with confirmed being no,
+        failure being issue, receipt being (blank_discovery with code being issue.code)
+end paragraph
+
+compaction_confirmed receives receipt as enigma.durable.client.compaction_receipt returns durable_reply of enigma.durable.client.compaction_receipt begin paragraph
+    give build durable_reply of enigma.durable.client.compaction_receipt with confirmed being yes,
+        failure being (failure with code being "", outcome_unknown being no), receipt being receipt
+end paragraph
+
+compaction_failed receives issue as durable_failure returns durable_reply of enigma.durable.client.compaction_receipt begin paragraph
+    give build durable_reply of enigma.durable.client.compaction_receipt with confirmed being no,
+        failure being issue, receipt being (build compaction_receipt with code being issue.code, revision being 0, reclaimed being 0, retained_from being 0)
+end paragraph
+
+grant_confirmed receives receipt as enigma.authority.grant_receipt returns durable_reply of enigma.authority.grant_receipt begin paragraph
+    give build durable_reply of enigma.authority.grant_receipt with confirmed being yes,
+        failure being (failure with code being "", outcome_unknown being no), receipt being receipt
+end paragraph
+
+grant_failed receives issue as durable_failure returns durable_reply of enigma.authority.grant_receipt begin paragraph
+    give build durable_reply of enigma.authority.grant_receipt with confirmed being no,
+        failure being issue, receipt being (build grant_receipt with code being issue.code, grant_id being 0)
+end paragraph
+
+!!! The owner controls storage lifetime and provisioning. This application
+!!! facade pins its incarnation and never copies or invents caller admission.
+public durable_client begin class
+    field owner as durable_session
+    field grant_id as number
+    field instance as text
+
+    request receives operation as text, caller as access_context, grant_key as text returns request_builder begin paragraph
+        value node is new_request with nothing
+        evaluate node.put_text with key being "op", input being operation
+        evaluate node.put_text with key being "instance", input being my instance
+        evaluate node.put_number with key being grant_key, input being my grant_id
+        evaluate node.child with key being "caller", input being (caller_json with caller being caller)
+        give node
+    end paragraph
+
+    write receives operation as text, caller as access_context, claim as proposition, source as text,
+        expected_revision as number returns durable_reply of enigma.ledger.write_receipt begin paragraph
+        value request is my request with operation being operation, caller being caller, grant_key being "grant_id"
+        evaluate request.child with key being "claim", input being (claim_json with claim being claim)
+        evaluate request.put_text with key being "source", input being source
+        evaluate request.put_number with key being "expected_revision", input being expected_revision
+        value reply is perform with owner being my owner, request being request
+        when reply.is_error with nothing then give write_failed with issue being (reply.unwrap_error with nothing) end when
+        value decoded is decode_write with node being (reply.unwrap with nothing)
+        when decoded.is_error with nothing then give write_failed with issue being (protocol_failure with owner being my owner) end when
+        value receipt is decoded.unwrap with nothing
+        when receipt.code equals "ok" and (receipt.evidence_id does not equal receipt.event_id or
+            (expected_revision is at least 0 and receipt.revision minus 1 does not equal expected_revision)) then
+            give write_failed with issue being (protocol_failure with owner being my owner)
+        end when
+        give write_confirmed with receipt being receipt
+    end paragraph
+
+    public support receives caller as access_context, claim as proposition, source as text,
+        expected_revision as number returns durable_reply of enigma.ledger.write_receipt begin paragraph
+        give my write with operation being "support", caller being caller, claim being claim, source being source, expected_revision being expected_revision
+    end paragraph
+
+    public oppose receives caller as access_context, claim as proposition, source as text,
+        expected_revision as number returns durable_reply of enigma.ledger.write_receipt begin paragraph
+        give my write with operation being "oppose", caller being caller, claim being claim, source being source, expected_revision being expected_revision
+    end paragraph
+
+    public withdraw receives caller as access_context, evidence_id as number,
+        expected_revision as number returns durable_reply of enigma.ledger.write_receipt begin paragraph
+        value request is my request with operation being "withdraw", caller being caller, grant_key being "grant_id"
+        evaluate request.put_number with key being "evidence_id", input being evidence_id
+        evaluate request.put_number with key being "expected_revision", input being expected_revision
+        value reply is perform with owner being my owner, request being request
+        when reply.is_error with nothing then give write_failed with issue being (reply.unwrap_error with nothing) end when
+        value decoded is decode_write with node being (reply.unwrap with nothing)
+        when decoded.is_error with nothing then give write_failed with issue being (protocol_failure with owner being my owner) end when
+        value receipt is decoded.unwrap with nothing
+        when receipt.code equals "ok" and (receipt.evidence_id does not equal evidence_id or receipt.event_id is at most evidence_id or
+            (expected_revision is at least 0 and receipt.revision minus 1 does not equal expected_revision)) then
+            give write_failed with issue being (protocol_failure with owner being my owner)
+        end when
+        give write_confirmed with receipt being receipt
+    end paragraph
+
+    public resolve receives caller as access_context, claim as proposition, as_of as number,
+        max_work as number, max_evidence as number returns durable_reply of enigma.ledger.resolution begin paragraph
+        value request is my request with operation being "resolve", caller being caller, grant_key being "grant_id"
+        evaluate request.child with key being "claim", input being (claim_json with claim being claim)
+        evaluate request.put_number with key being "as_of", input being as_of
+        evaluate request.put_number with key being "max_work", input being max_work
+        evaluate request.put_number with key being "max_evidence", input being max_evidence
+        value reply is perform with owner being my owner, request being request
+        when reply.is_error with nothing then give resolution_failed with issue being (reply.unwrap_error with nothing) end when
+        value decoded is decode_resolution with node being (reply.unwrap with nothing)
+        when decoded.is_error with nothing then give resolution_failed with issue being (protocol_failure with owner being my owner) end when
+        value receipt is decoded.unwrap with nothing
+        when receipt.code equals "ok" and ((as_of is at least 0 and receipt.revision does not equal as_of) or
+            receipt.inspected is greater than max_work or (the length of receipt.evidence_ids) is greater than max_evidence) then
+            give resolution_failed with issue being (protocol_failure with owner being my owner)
+        end when
+        give resolution_confirmed with receipt being receipt
+    end paragraph
+
+    public inspect receives caller as access_context, evidence_id as number,
+        as_of as number returns durable_reply of enigma.ledger.inspect_receipt begin paragraph
+        value request is my request with operation being "inspect", caller being caller, grant_key being "grant_id"
+        evaluate request.put_number with key being "evidence_id", input being evidence_id
+        evaluate request.put_number with key being "as_of", input being as_of
+        value reply is perform with owner being my owner, request being request
+        when reply.is_error with nothing then give inspection_failed with issue being (reply.unwrap_error with nothing) end when
+        value decoded is decode_inspection with node being (reply.unwrap with nothing)
+        when decoded.is_error with nothing then give inspection_failed with issue being (protocol_failure with owner being my owner) end when
+        value receipt is decoded.unwrap with nothing
+        when receipt.code equals "ok" and (receipt.evidence.id does not equal evidence_id or
+            (as_of is at least 0 and receipt.revision does not equal as_of)) then
+            give inspection_failed with issue being (protocol_failure with owner being my owner)
+        end when
+        give inspection_confirmed with receipt being receipt
+    end paragraph
+
+    public discover receives caller as access_context, pattern as evidence_pattern, as_of as number,
+        max_work as number, max_evidence as number returns durable_reply of enigma.discovery.discovery_result begin paragraph
+        value request is my request with operation being "discover", caller being caller, grant_key being "grant_id"
+        evaluate request.child with key being "pattern", input being (pattern_json with pattern being pattern)
+        evaluate request.put_number with key being "as_of", input being as_of
+        evaluate request.put_number with key being "max_work", input being max_work
+        evaluate request.put_number with key being "max_evidence", input being max_evidence
+        value reply is perform with owner being my owner, request being request
+        when reply.is_error with nothing then give discovery_failed with issue being (reply.unwrap_error with nothing) end when
+        value decoded is decode_discovery with node being (reply.unwrap with nothing)
+        when not decoded.valid then give discovery_failed with issue being (protocol_failure with owner being my owner) end when
+        value receipt is decoded.receipt
+        when receipt.code equals "ok" then
+            when (as_of is at least 0 and receipt.revision does not equal as_of) or
+                receipt.inspected is greater than max_work or (receipt.items.count with nothing) is greater than max_evidence then
+                give discovery_failed with issue being (protocol_failure with owner being my owner)
+            end when
+            repeat for index from 0 to (receipt.items.count with nothing)
+                value item is (receipt.items.get with index being index).unwrap with nothing
+                when not (pattern_matches with pattern being pattern, item being item) then
+                    give discovery_failed with issue being (protocol_failure with owner being my owner)
+                end when
+            end repeat
+        end when
+        give discovery_confirmed with receipt being receipt
+    end paragraph
+
+    public compact receives caller as access_context returns durable_reply of enigma.durable.client.compaction_receipt begin paragraph
+        value request is my request with operation being "compact", caller being caller, grant_key being "grant_id"
+        value reply is perform with owner being my owner, request being request
+        when reply.is_error with nothing then give compaction_failed with issue being (reply.unwrap_error with nothing) end when
+        value decoded is decode_compaction with node being (reply.unwrap with nothing)
+        when decoded.is_error with nothing then give compaction_failed with issue being (protocol_failure with owner being my owner) end when
+        give compaction_confirmed with receipt being (decoded.unwrap with nothing)
+    end paragraph
+
+    public delegate receives caller as access_context, entity as text, session_id as number, operations as number,
+        expires as number, work_limit as number, result_limit as number returns durable_reply of enigma.authority.grant_receipt begin paragraph
+        value request is my request with operation being "delegate", caller being caller, grant_key being "parent_id"
+        evaluate request.put_text with key being "entity", input being entity
+        evaluate request.put_number with key being "session", input being session_id
+        evaluate request.put_number with key being "operations", input being operations
+        evaluate request.put_number with key being "expires", input being expires
+        evaluate request.put_number with key being "work_limit", input being work_limit
+        evaluate request.put_number with key being "result_limit", input being result_limit
+        value reply is perform with owner being my owner, request being request
+        when reply.is_error with nothing then give grant_failed with issue being (reply.unwrap_error with nothing) end when
+        value decoded is decode_grant with node being (reply.unwrap with nothing)
+        when decoded.is_error with nothing then give grant_failed with issue being (protocol_failure with owner being my owner) end when
+        value receipt is decoded.unwrap with nothing
+        when receipt.code equals "ok" and receipt.grant_id is at most my grant_id then
+            give grant_failed with issue being (protocol_failure with owner being my owner)
+        end when
+        give grant_confirmed with receipt being receipt
+    end paragraph
+
+    public revoke receives caller as access_context returns durable_reply of enigma.authority.grant_receipt begin paragraph
+        value request is my request with operation being "revoke", caller being caller, grant_key being "grant_id"
+        value reply is perform with owner being my owner, request being request
+        when reply.is_error with nothing then give grant_failed with issue being (reply.unwrap_error with nothing) end when
+        value decoded is decode_grant with node being (reply.unwrap with nothing)
+        when decoded.is_error with nothing then give grant_failed with issue being (protocol_failure with owner being my owner) end when
+        value receipt is decoded.unwrap with nothing
+        when receipt.code equals "ok" and receipt.grant_id does not equal my grant_id then
+            give grant_failed with issue being (protocol_failure with owner being my owner)
+        end when
+        give grant_confirmed with receipt being receipt
+    end paragraph
+end class
+
+public connect receives owner as durable_session, grant_id as number returns durable_client begin paragraph
+    give build durable_client with owner being owner, grant_id being grant_id, instance being owner.incarnation
+end paragraph
+
+!!! Host provisioning is intentionally absent from durable_client methods.
+!!! The embedding host must establish admission before calling this fixture API.
+public provision_for_host receives owner as durable_session, entity as text, session_id as number,
+    operations as number, expires as number, work_limit as number, result_limit as number,
+    tick as number returns durable_reply of enigma.authority.grant_receipt begin paragraph
+    value request is new_request with nothing
+    evaluate request.put_text with key being "op", input being "install"
+    evaluate request.put_text with key being "instance", input being owner.incarnation
+    evaluate request.put_text with key being "entity", input being entity
+    evaluate request.put_number with key being "session", input being session_id
+    evaluate request.put_number with key being "operations", input being operations
+    evaluate request.put_number with key being "expires", input being expires
+    evaluate request.put_number with key being "work_limit", input being work_limit
+    evaluate request.put_number with key being "result_limit", input being result_limit
+    evaluate request.put_number with key being "tick", input being tick
+    value reply is perform with owner being owner, request being request
+    when reply.is_error with nothing then give grant_failed with issue being (reply.unwrap_error with nothing) end when
+    value decoded is decode_grant with node being (reply.unwrap with nothing)
+    when decoded.is_error with nothing then give grant_failed with issue being (protocol_failure with owner being owner) end when
+    give grant_confirmed with receipt being (decoded.unwrap with nothing)
+end paragraph
+
+note if_test_mode
+success_fixture returns request_builder begin paragraph
+    value node is new_request with nothing
+    evaluate node.put_text with key being "code", input being "ok"
+    evaluate node.put_text with key being "instance", input being "incarnation:test"
+    evaluate node.put_text with key being "database_id", input being "database:test"
+    evaluate node.put_number with key being "generation", input being 1
+    give node
+end paragraph
+
+note if_test_mode
+rejection_fixture receives code as text returns request_builder begin paragraph
+    value node is new_request with nothing
+    evaluate node.put_text with key being "code", input being code
+    evaluate node.put_text with key being "instance", input being ""
+    evaluate node.put_number with key being "generation", input being 0
+    give node
+end paragraph
+
+note if_test_mode
+fixture_evidence_json returns request_builder begin paragraph
+    value node is new_request with nothing
+    evaluate node.put_number with key being "id", input being 1
+    evaluate node.put_text with key being "subject", input being "subject:test"
+    evaluate node.put_text with key being "relation", input being "reports"
+    evaluate node.put_text with key being "object_value", input being "ready"
+    evaluate node.put with key being "supports", input being (boolean_value with yes).unwrap with nothing
+    evaluate node.put_text with key being "source", input being "synthetic:receipt"
+    evaluate node.put_text with key being "entity", input being "agent:test"
+    evaluate node.put_number with key being "session", input being 7
+    evaluate node.put_number with key being "asserted_at", input being 1
+    evaluate node.put_number with key being "withdrawn_at", input being 0
+    give node
+end paragraph
+
+note suite "enigma.durable.client"
+write_receipts_distinguish_confirmed_rejection_from_malformed_output begin test
+    value written is success_fixture with nothing
+    evaluate written.put_number with key being "revision", input being 1
+    evaluate written.put_number with key being "evidence_id", input being 1
+    evaluate written.put_number with key being "event_id", input being 1
+    value parsed is decode_write with node being written.node
+    expect not (parsed.is_error with nothing)
+    expect (parsed.unwrap with nothing).evidence_id equals 1
+    evaluate written.put_text with key being "event_id", input being "1"
+    expect (decode_write with node being written.node).is_error with nothing
+    value denied is rejection_fixture with code being "denied"
+    value refused is decode_write with node being denied.node
+    expect not (refused.is_error with nothing)
+    expect (refused.unwrap with nothing).code equals "denied"
+    expect (refused.unwrap with nothing).revision equals 0
+    evaluate denied.put_number with key being "generation", input being 9
+    expect (decode_write with node being denied.node).is_error with nothing
+    value leaked is rejection_fixture with code being "conflict"
+    evaluate leaked.put_number with key being "revision", input being 1
+    evaluate leaked.put_number with key being "evidence_id", input being 0
+    evaluate leaked.put_number with key being "event_id", input being 0
+    expect (decode_write with node being leaked.node).is_error with nothing
+end test
+
+note suite "enigma.durable.client"
+resolution_decoding_preserves_completeness_and_rejects_false_verdicts begin test
+    value node is success_fixture with nothing
+    evaluate node.put_text with key being "state", input being "supported"
+    evaluate node.put_number with key being "revision", input being 1
+    evaluate node.put with key being "complete", input being (boolean_value with yes).unwrap with nothing
+    evaluate node.put with key being "evidence_complete", input being (boolean_value with yes).unwrap with nothing
+    evaluate node.put_number with key being "inspected", input being 1
+    evaluate node.put_number with key being "supporting", input being 1
+    evaluate node.put_number with key being "opposing", input being 0
+    value first is (integer_value with "1").unwrap with nothing
+    value ids is (array_append with (new_array with nothing).unwrap with nothing, first).unwrap with nothing
+    evaluate node.put with key being "evidence_ids", input being ids
+    value parsed is decode_resolution with node being node.node
+    expect not (parsed.is_error with nothing)
+    expect (parsed.unwrap with nothing).state equals "supported"
+    evaluate node.put with key being "complete", input being (boolean_value with no).unwrap with nothing
+    expect (decode_resolution with node being node.node).is_error with nothing
+    evaluate node.put_text with key being "state", input being "incomplete"
+    evaluate node.put with key being "evidence_complete", input being (boolean_value with no).unwrap with nothing
+    value partial is decode_resolution with node being node.node
+    expect not (partial.is_error with nothing)
+    expect not (partial.unwrap with nothing).complete
+    expect (partial.unwrap with nothing).supporting equals 1
+end test
+
+note suite "enigma.durable.client"
+discovery_decoding_keeps_provenance_and_requires_active_ordered_reports begin test
+    value row is fixture_evidence_json with nothing
+    value rows is (array_append with (new_array with nothing).unwrap with nothing, row.node).unwrap with nothing
+    value node is success_fixture with nothing
+    evaluate node.put_number with key being "revision", input being 1
+    evaluate node.put_number with key being "retained_from", input being 0
+    evaluate node.put with key being "complete", input being (boolean_value with yes).unwrap with nothing
+    evaluate node.put with key being "evidence_complete", input being (boolean_value with yes).unwrap with nothing
+    evaluate node.put_number with key being "inspected", input being 1
+    evaluate node.put_number with key being "matched", input being 1
+    evaluate node.put with key being "items", input being rows
+    value parsed is decode_discovery with node being node.node
+    expect parsed.valid
+    value report is (parsed.receipt.items.get with index being 0).unwrap with nothing
+    expect report.source equals "synthetic:receipt"
+    expect report.session equals 7
+    value duplicate is (array_append with rows, row.node).unwrap with nothing
+    evaluate node.put with key being "items", input being duplicate
+    evaluate node.put_number with key being "matched", input being 2
+    evaluate node.put_number with key being "inspected", input being 2
+    expect not (decode_discovery with node being node.node).valid
+    evaluate node.put with key being "items", input being rows
+    evaluate node.put_number with key being "matched", input being 1
+    evaluate node.put_number with key being "inspected", input being 1
+    evaluate node.put_number with key being "retained_from", input being 2
+    expect not (decode_discovery with node being node.node).valid
+end test
+
+note suite "enigma.durable.client"
+inspection_grants_and_compaction_have_checked_result_shapes begin test
+    value inspection is success_fixture with nothing
+    evaluate inspection.put_number with key being "revision", input being 1
+    evaluate inspection.child with key being "evidence", input being (fixture_evidence_json with nothing)
+    expect not ((decode_inspection with node being inspection.node).is_error with nothing)
+    value row is fixture_evidence_json with nothing
+    evaluate row.put_number with key being "asserted_at", input being 2
+    evaluate inspection.child with key being "evidence", input being row
+    expect (decode_inspection with node being inspection.node).is_error with nothing
+    value granted is success_fixture with nothing
+    evaluate granted.put_number with key being "grant_id", input being 1
+    expect not ((decode_grant with node being granted.node).is_error with nothing)
+    evaluate granted.put_number with key being "grant_id", input being 0
+    expect (decode_grant with node being granted.node).is_error with nothing
+    value compacted is success_fixture with nothing
+    evaluate compacted.put_number with key being "revision", input being 3
+    evaluate compacted.put_number with key being "reclaimed", input being 2
+    evaluate compacted.put_number with key being "retained_from", input being 3
+    expect not ((decode_compaction with node being compacted.node).is_error with nothing)
+    evaluate compacted.put_number with key being "retained_from", input being 4
+    expect (decode_compaction with node being compacted.node).is_error with nothing
+end test
+
+
+note suite "enigma.durable.client"
+uniform_replies_separate_confirmation_from_failure_and_clear_metadata begin test
+    value issue is failure with code being "storage_error", outcome_unknown being yes
+    value rejected_write is write_failed with issue being issue
+    expect not rejected_write.confirmed
+    expect rejected_write.failure.code equals "storage_error"
+    expect rejected_write.failure.outcome_unknown
+    expect rejected_write.receipt.code equals "storage_error"
+    expect rejected_write.receipt.revision equals 0
+    expect rejected_write.receipt.evidence_id equals 0
+    value rejected_discovery is discovery_failed with issue being issue
+    expect not rejected_discovery.confirmed
+    expect rejected_discovery.receipt.code equals "storage_error"
+    expect rejected_discovery.receipt.revision equals 0
+    expect rejected_discovery.receipt.retained_from equals 0
+    expect not rejected_discovery.receipt.complete
+    expect (rejected_discovery.receipt.items.count with nothing) equals 0
+    value confirmed_denial is discovery_confirmed with receipt being (blank_discovery with code being "denied")
+    expect confirmed_denial.confirmed
+    expect confirmed_denial.receipt.code equals "denied"
+    expect confirmed_denial.failure.code equals ""
+    expect not confirmed_denial.failure.outcome_unknown
+end test

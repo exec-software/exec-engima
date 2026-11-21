@@ -1,0 +1,16 @@
+nildata 1
+object
+  schema is "nil.project.v1"
+  name is "enigma-durable-example"
+  entry is "examples/main.matrix"
+  includePaths is an array
+    item is "src"
+    item is "../../src"
+  end array
+  outputDirectory is "build"
+  analysis is an object
+    disabledRules is an array
+    end array
+    warningsAsErrors is true
+  end object
+end object

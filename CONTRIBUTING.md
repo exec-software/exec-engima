@@ -16,6 +16,8 @@ Run:
 
 ```sh
 ./scripts/test.sh
+./scripts/test-durable-client.sh
+./scripts/test-matrix-host.sh
 ```
 
 This checks analyzer warnings, Matrix tests, builds, the CLI contract on VM

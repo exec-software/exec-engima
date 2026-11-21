@@ -1,0 +1,1096 @@
+book enigma.durable.session
+
+read everything from nil.std.nildata
+read everything from nil.std.core
+read write_bytes_durable, read_regular_bytes, sync_directory,
+    acquire_file_lock, release_file_lock, file_lock_is_held, create_private_directory,
+    is_private_directory, is_private_regular_file, sha256_hex from nil.std.io
+read get_current_directory from nil.std.system
+read byte_at, from_byte, char_at, contains, substring from nil.std.text
+read random_hex from nil.std.security
+read stage_request_typed from enigma.storage
+read build_envelope, read_envelope, confirm_envelope,
+    exact_object, field_text, field_number, field_value from enigma.persistence
+
+!!! Shared Matrix persistence owner. CLI and application clients use this one
+!!! implementation of validation, recovery, locking, and publication ordering.
+!!! Fields are trusted-host memory, not a hostile-code isolation boundary.
+!!! Each dispatch stages from committed payload text; no authority object survives
+!!! a commit. The lock is owned by the current NIL execution context and its
+!!! continued ownership must be proved before applying or releasing a session.
+
+checkpoint_name returns text begin paragraph
+    give "checkpoint.json"
+end paragraph
+
+lock_name returns text begin paragraph
+    give ".lock"
+end paragraph
+
+checkpoint_limit returns number begin paragraph
+    give 1048576
+end paragraph
+
+request_limit returns number begin paragraph
+    give 65536
+end paragraph
+
+max_generation returns number begin paragraph
+    give 9223372036854775807
+end paragraph
+
+!!! Exactly 32 lowercase hexadecimal characters, matching the identifiers the
+!!! Python host produced with secrets.token_hex(16).
+hex_id_ok receives candidate as text returns boolean begin paragraph
+    when (the length of candidate) does not equal 32 then
+        give no
+    end when
+    repeat for index from 0 to 32
+        value character is char_at with s being candidate, index being index
+        when not (contains with s being "0123456789abcdef", needle being character) then
+            give no
+        end when
+    end repeat
+    give yes
+end paragraph
+
+bytes_of receives content as text returns array of override byte begin paragraph
+    variable octets as array of override byte is []
+    value size is the length of content
+    variable offset as number is 0
+    repeat while offset is less than size
+        variable width as number is 1024
+        when size minus offset is less than width then
+            set width to size minus offset
+        end when
+        !!! Byte access may measure or copy its text argument. Keep that
+        !!! argument bounded rather than passing the full checkpoint per byte.
+        value block is substring with s being content, start being offset, length being width
+        repeat for index from 0 to width
+            append (byte_at with s being block, index being index) becomes override byte to octets
+        end repeat
+        set offset to offset plus width
+    end repeat
+    give octets
+end paragraph
+
+text_of receives octets as array of override byte returns text begin paragraph
+    !!! Keep per-byte copies bounded, then join complete chunks pairwise.
+    !!! Growing one prefix for an entire checkpoint copied its whole history
+    !!! for every byte. Text here remains raw bytes, including UTF-8 sequences
+    !!! split across a chunk boundary; no decoding or normalization occurs.
+    variable chunks as array of text is []
+    variable chunk as text is ""
+    variable held as number is 0
+    repeat for each octet in octets
+        set chunk to chunk plus (from_byte with code being octet becomes number)
+        set held to held plus 1
+        when held equals 1024 then
+            append chunk to chunks
+            set chunk to ""
+            set held to 0
+        end when
+    end repeat
+    when held is greater than 0 then
+        append chunk to chunks
+    end when
+    when (the length of chunks) equals 0 then
+        give ""
+    end when
+    repeat while (the length of chunks) is greater than 1
+        variable merged as array of text is []
+        variable index as number is 0
+        repeat while index is less than (the length of chunks)
+            when index plus 1 is less than (the length of chunks) then
+                append ((chunks at index) plus (chunks at (index plus 1))) to merged
+            otherwise
+                append (chunks at index) to merged
+            end when
+            set index to index plus 2
+        end repeat
+        set chunks to merged
+    end repeat
+    give chunks at 0
+end paragraph
+
+public metadata_view begin record
+    field ok as boolean
+    field database_id as text
+    field incarnation as text
+    field generation as number
+end record
+
+!!! The identity fields a candidate must carry. This is the Python host's
+!!! _metadata: a payload that fails it is never published.
+payload_metadata receives payload as text returns metadata_view begin paragraph
+    value empty is build metadata_view with ok being no, database_id being "", incarnation being "", generation being 0
+    when (the length of payload) is greater than (checkpoint_limit with nothing) then
+        give empty
+    end when
+    value parsed is from_json with payload
+    when parsed.is_error with nothing then
+        give empty
+    end when
+    value root is parsed.unwrap with nothing
+    value shape is kind with root
+    when shape.is_error with nothing then
+        give empty
+    end when
+    when (shape.unwrap with nothing) does not equal "object" then
+        give empty
+    end when
+    value database_found is field_text with node being root, key being "database_id"
+    value incarnation_found is field_text with node being root, key being "incarnation"
+    value generation_found is field_number with node being root, key being "generation"
+    when database_found.is_error with nothing or incarnation_found.is_error with nothing or
+        generation_found.is_error with nothing then
+        give empty
+    end when
+    value database_id is database_found.unwrap with nothing
+    value incarnation is incarnation_found.unwrap with nothing
+    value generation is generation_found.unwrap with nothing
+    when not (hex_id_ok with candidate being database_id) or
+        not (hex_id_ok with candidate being incarnation) then
+        give empty
+    end when
+    when generation is less than 0 or generation is greater than (max_generation with nothing) then
+        give empty
+    end when
+    give build metadata_view with ok being yes, database_id being database_id,
+        incarnation being incarnation, generation being generation
+end paragraph
+
+public stage_view begin record
+    field ok as boolean
+    field code as text
+    field payload as text
+    field receipt as text
+end record
+
+stage_failed receives code as text returns stage_view begin paragraph
+    give build stage_view with ok being no, code being code, payload being "", receipt being ""
+end paragraph
+
+!!! Everything the Python host checked on a worker reply before publishing it.
+!!! In one process these are internal invariants, but they remain the only
+!!! verification that a candidate is a legitimate successor to committed state.
+check_candidate receives mode as text, committed as text, candidate as text,
+    receipt as `Value`, database_id as text, incarnation as text returns text begin paragraph
+    value receipt_code_found is field_text with node being receipt, key being "code"
+    when receipt_code_found.is_error with nothing then
+        give "worker_protocol"
+    end when
+    value receipt_code is receipt_code_found.unwrap with nothing
+    !!! A denial neither mutates the payload nor claims an instance.
+    when mode equals "apply" and candidate equals committed then
+        value denial_keys as array of text is ["code", "instance", "generation"]
+        when not (exact_object with node being receipt, keys being denial_keys) then
+            give "worker_protocol"
+        end when
+        when receipt_code does not equal "denied" then
+            give "worker_protocol"
+        end when
+        value instance_found is field_text with node being receipt, key being "instance"
+        value generation_found is field_number with node being receipt, key being "generation"
+        when instance_found.is_error with nothing or generation_found.is_error with nothing then
+            give "worker_protocol"
+        end when
+        when (instance_found.unwrap with nothing) does not equal "" or
+            (generation_found.unwrap with nothing) does not equal 0 then
+            give "worker_protocol"
+        end when
+        give "ok"
+    end when
+    value observed is payload_metadata with payload being candidate
+    when not observed.ok then
+        give "worker_protocol"
+    end when
+    when observed.database_id does not equal database_id or
+        observed.incarnation does not equal incarnation then
+        give "worker_protocol"
+    end when
+    !!! A create starts at zero; anything else is exactly one past the
+    !!! generation that is already committed.
+    variable expected as number is 0
+    when mode does not equal "create" then
+        value current is payload_metadata with payload being committed
+        when not current.ok then
+            give "worker_protocol"
+        end when
+        set expected to current.generation plus 1
+    end when
+    when observed.generation does not equal expected then
+        give "worker_protocol"
+    end when
+    value successful is receipt_code equals "ok" or receipt_code equals "ready" or receipt_code equals "created"
+    when successful then
+        value instance_found is field_text with node being receipt, key being "instance"
+        value generation_found is field_number with node being receipt, key being "generation"
+        value database_found is field_text with node being receipt, key being "database_id"
+        when instance_found.is_error with nothing or generation_found.is_error with nothing or
+            database_found.is_error with nothing then
+            give "worker_protocol"
+        end when
+        when (instance_found.unwrap with nothing) does not equal incarnation or
+            (generation_found.unwrap with nothing) does not equal observed.generation or
+            (database_found.unwrap with nothing) does not equal database_id then
+            give "worker_protocol"
+        end when
+    otherwise
+        value refusals as array of text is ["denied", "invalid", "conflict", "limit", "capacity", "not_found"]
+        variable known as boolean is no
+        repeat for each refusal in refusals
+            when receipt_code equals refusal then
+                set known to yes
+            end when
+        end repeat
+        when not known then
+            give "worker_protocol"
+        end when
+        value instance_found is field_text with node being receipt, key being "instance"
+        value generation_found is field_number with node being receipt, key being "generation"
+        when instance_found.is_error with nothing or generation_found.is_error with nothing then
+            give "worker_protocol"
+        end when
+        when (instance_found.unwrap with nothing) does not equal "" or
+            (generation_found.unwrap with nothing) does not equal 0 then
+            give "worker_protocol"
+        end when
+        value leaked is object_has with receipt, "database_id"
+        when leaked.is_error with nothing then
+            give "worker_protocol"
+        end when
+        when leaked.unwrap with nothing then
+            give "worker_protocol"
+        end when
+    end when
+    !!! A create or a recovery must report its own outcome, never a refusal.
+    when mode equals "create" and receipt_code does not equal "created" then
+        give "worker_protocol"
+    end when
+    when mode equals "recover" and receipt_code does not equal "ready" then
+        give "worker_protocol"
+    end when
+    give "ok"
+end paragraph
+
+!!! Stage one dispatch against the committed payload. The envelope is built
+!!! with the checked encoder, never concatenated, and handed to the same
+!!! strict request decoder the separate worker process uses.
+stage receives mode as text, committed as text, database_id as text,
+    incarnation as text, scope as text, request as `Value` returns stage_view begin paragraph
+    variable envelope is (new_object with nothing).unwrap with nothing
+    value mode_node is string_value with mode
+    value payload_node is string_value with committed
+    value database_node is string_value with database_id
+    value incarnation_node is string_value with incarnation
+    value scope_node is string_value with scope
+    when mode_node.is_error with nothing or payload_node.is_error with nothing or
+        database_node.is_error with nothing or incarnation_node.is_error with nothing or
+        scope_node.is_error with nothing then
+        give stage_failed with code being "worker_protocol"
+    end when
+    set envelope to (object_set with envelope, "mode", (mode_node.unwrap with nothing)).unwrap with nothing
+    set envelope to (object_set with envelope, "payload", (payload_node.unwrap with nothing)).unwrap with nothing
+    set envelope to (object_set with envelope, "database_id", (database_node.unwrap with nothing)).unwrap with nothing
+    set envelope to (object_set with envelope, "incarnation", (incarnation_node.unwrap with nothing)).unwrap with nothing
+    set envelope to (object_set with envelope, "scope", (scope_node.unwrap with nothing)).unwrap with nothing
+    set envelope to (object_set with envelope, "request", request).unwrap with nothing
+    value serialized is to_json with envelope
+    when serialized.is_error with nothing then
+        give stage_failed with code being "worker_protocol"
+    end when
+    !!! The typed reply fixes the exact code/payload/receipt shape by
+    !!! construction. Its payload and receipt remain separate bounded values:
+    !!! the worker's combined frame may exceed NILData's single-value ceiling.
+    !!! Request decoding above and candidate verification below stay shared
+    !!! with the worker path; no authority object crosses this boundary.
+    value reply is stage_request_typed with input being (serialized.unwrap with nothing)
+    value reply_code is reply.code
+    when reply_code does not equal "ok" then
+        !!! The engine reporting corrupt state is distinct from it breaking its
+        !!! own protocol, and recovery must not confuse the two.
+        when reply_code equals "corrupt" then
+            give stage_failed with code being "corrupt"
+        end when
+        give stage_failed with code being "worker_protocol"
+    end when
+    value receipt is reply.receipt
+    value receipt_shape is kind with receipt
+    when receipt_shape.is_error with nothing then
+        give stage_failed with code being "worker_protocol"
+    end when
+    when (receipt_shape.unwrap with nothing) does not equal "object" then
+        give stage_failed with code being "worker_protocol"
+    end when
+    value candidate is reply.payload
+    value verdict is check_candidate with mode being mode, committed being committed,
+        candidate being candidate, receipt being receipt, database_id being database_id,
+        incarnation being incarnation
+    when verdict does not equal "ok" then
+        give stage_failed with code being verdict
+    end when
+    value receipt_text is to_json with receipt
+    when receipt_text.is_error with nothing then
+        give stage_failed with code being "worker_protocol"
+    end when
+    give build stage_view with ok being yes, code being "ok", payload being candidate,
+        receipt being (receipt_text.unwrap with nothing)
+end paragraph
+
+!!! Publish a candidate durably. write_bytes_durable performs the whole
+!!! ordering the Python host spelled out: a fresh private staging file, its
+!!! synchronization, atomic replacement of the canonical name, and
+!!! synchronization of the same publication directory. Nothing may acknowledge
+!!! before this returns, and an uncertain publication is never a success.
+commit receives directory as text, payload as text returns text begin paragraph
+    value digest is sha256_hex with data being (bytes_of with content being payload)
+    when digest.is_error with nothing then
+        give "storage_error"
+    end when
+    value envelope is build_envelope with payload being payload,
+        digest being (digest.unwrap with nothing)
+    when envelope.code does not equal "ok" then
+        give "storage_error"
+    end when
+    value written is write_bytes_durable with path being (directory plus "/" plus (checkpoint_name with nothing)),
+        content being (bytes_of with content being envelope.content), replace being yes
+    when written.is_error with nothing then
+        give "storage_error"
+    end when
+    give "ok"
+end paragraph
+
+public load_view begin record
+    field ok as boolean
+    field payload as text
+end record
+
+!!! Recovery reads only the canonical checkpoint. read_regular_bytes opens it
+!!! once without following its final component, rejects special files, and
+!!! rejects input observed changing under it, which is the preflight the
+!!! Python host assembled from fstat comparisons. A missing, malformed,
+!!! truncated, mis-digested, or semantically invalid checkpoint fails closed;
+!!! there is no fallback to an earlier snapshot.
+load_checkpoint receives directory as text returns load_view begin paragraph
+    value failed is build load_view with ok being no, payload being ""
+    value canonical is directory plus "/" plus (checkpoint_name with nothing)
+    !!! The Python host checked the opened descriptor: a regular file, owned by
+    !!! the effective user, singly linked, exactly 0600. read_regular_bytes
+    !!! rejects special files and will not follow the final component, but it
+    !!! accepts a loose mode and a second hard link, so the preflight is
+    !!! explicit here. It inspects a path, so it is weaker than a check on the
+    !!! descriptor that is then read; publication keeps its own checked open.
+    value private is is_private_regular_file with path being canonical
+    when private.is_error with nothing then
+        give failed
+    end when
+    when not (private.unwrap with nothing) then
+        give failed
+    end when
+    value raw is read_regular_bytes with path being canonical,
+        maximum_bytes being (checkpoint_limit with nothing)
+    when raw.is_error with nothing then
+        give failed
+    end when
+    value content is text_of with octets being (raw.unwrap with nothing)
+    value decoded is read_envelope with content being content
+    when decoded.code does not equal "ok" then
+        give failed
+    end when
+    value digest is sha256_hex with data being (bytes_of with content being decoded.payload)
+    when digest.is_error with nothing then
+        give failed
+    end when
+    when (confirm_envelope with decoded being decoded, computed being (digest.unwrap with nothing)) does not equal "ok" then
+        give failed
+    end when
+    value observed is payload_metadata with payload being decoded.payload
+    when not observed.ok then
+        give failed
+    end when
+    give build load_view with ok being yes, payload being decoded.payload
+end paragraph
+
+empty_object returns `Value` begin paragraph
+    give (new_object with nothing).unwrap with nothing
+end paragraph
+
+public dispatch_result begin record
+    !!! ok confirms a durable domain receipt, including denied/conflict results.
+    !!! Any other code is a session/transport failure, never a domain receipt.
+    field code as text
+    field outcome_unknown as boolean
+    field receipt as `Value`
+end record
+
+dispatch_failed receives code as text, outcome_unknown as boolean returns dispatch_result begin paragraph
+    give build dispatch_result with code being code, outcome_unknown being outcome_unknown,
+        receipt being (empty_object with nothing)
+end paragraph
+
+public durable_session begin class
+    field directory as text
+    field database_id as text
+    field incarnation as text
+    field scope_name as text
+    field payload as text
+    field lock_token as number
+    field active as boolean
+    field poisoned as boolean
+    field outcome_unknown as boolean
+
+    !!! A typed client that cannot interpret a confirmed backend reply must
+    !!! refuse reuse: an effect may already have been durably committed.
+    public invalidate returns nothing begin paragraph
+        set my active to no
+        set my poisoned to yes
+        set my outcome_unknown to yes
+        set my payload to ""
+        give nothing
+    end paragraph
+
+    poison receives uncertain as boolean returns nothing begin paragraph
+        set my active to no
+        set my poisoned to yes
+        set my outcome_unknown to my outcome_unknown or uncertain
+        set my payload to ""
+        give nothing
+    end paragraph
+
+    public dispatch receives request as `Value` returns dispatch_result begin paragraph
+        when my poisoned then
+            give dispatch_failed with code being "poisoned", outcome_unknown being my outcome_unknown
+        end when
+        when not my active then
+            give dispatch_failed with code being "closed", outcome_unknown being no
+        end when
+        !!! An embedding may retain this class after an invocation has ended.
+        !!! The runtime closes its locks then; cached session fields cannot
+        !!! recreate that ownership in the next invocation or another context.
+        value held is file_lock_is_held with token being my lock_token
+        when held.is_error with nothing then
+            evaluate my poison with uncertain being no
+            give dispatch_failed with code being "lock_error", outcome_unknown being no
+        end when
+        when not (held.unwrap with nothing) then
+            evaluate my poison with uncertain being no
+            give dispatch_failed with code being "lock_lost", outcome_unknown being no
+        end when
+        value request_text is to_json with request
+        when request_text.is_error with nothing then
+            evaluate my poison with uncertain being no
+            give dispatch_failed with code being "invalid_request", outcome_unknown being no
+        end when
+        when (the length of (request_text.unwrap with nothing)) is greater than (request_limit with nothing) then
+            evaluate my poison with uncertain being no
+            give dispatch_failed with code being "invalid_request", outcome_unknown being no
+        end when
+        value identity is payload_metadata with payload being my payload
+        when not identity.ok or identity.database_id does not equal my database_id or
+            identity.incarnation does not equal my incarnation then
+            evaluate my poison with uncertain being no
+            give dispatch_failed with code being "corrupt", outcome_unknown being no
+        end when
+        value applied is stage with mode being "apply", committed being my payload,
+            database_id being my database_id, incarnation being my incarnation,
+            scope being "", request being request
+        when not applied.ok then
+            evaluate my poison with uncertain being no
+            give dispatch_failed with code being applied.code, outcome_unknown being no
+        end when
+        !!! Parse the already checked receipt before publication, so no later
+        !!! serialization or shape failure can follow an acknowledged commit.
+        value receipt is from_json with applied.receipt
+        when receipt.is_error with nothing then
+            evaluate my poison with uncertain being no
+            give dispatch_failed with code being "worker_protocol", outcome_unknown being no
+        end when
+        when applied.payload does not equal my payload then
+            when (commit with directory being my directory, payload being applied.payload) does not equal "ok" then
+                evaluate my poison with uncertain being yes
+                give dispatch_failed with code being "storage_error", outcome_unknown being yes
+            end when
+            !!! Adoption follows both file and directory synchronization.
+            set my payload to applied.payload
+        end when
+        give build dispatch_result with code being "ok", outcome_unknown being no,
+            receipt being (receipt.unwrap with nothing)
+    end paragraph
+
+    public close returns text begin paragraph
+        !!! Disable every alias before attempting release. A failed release
+        !!! must never leave a seemingly usable owner or expose cached state.
+        value required_proof is my active or my lock_token is greater than 0
+        set my active to no
+        set my payload to ""
+        value token is my lock_token
+        set my lock_token to 0
+        when token is at most 0 then
+            when required_proof then
+                set my poisoned to yes
+                give "lock_error"
+            end when
+            give "closed"
+        end when
+        value held is file_lock_is_held with token being token
+        when held.is_error with nothing then
+            set my poisoned to yes
+            give "lock_error"
+        end when
+        when not (held.unwrap with nothing) then
+            set my poisoned to yes
+            give "lock_error"
+        end when
+        value released is release_file_lock with token being token
+        when released.is_error with nothing then
+            set my poisoned to yes
+            give "lock_error"
+        end when
+        when not (released.unwrap with nothing) then
+            set my poisoned to yes
+            give "lock_error"
+        end when
+        give "closed"
+    end paragraph
+end class
+
+public session_open_result begin record
+    field code as text
+    field outcome_unknown as boolean
+    field session as durable_session
+    field receipt as `Value`
+end record
+
+blank_session returns durable_session begin paragraph
+    give build durable_session with directory being "", database_id being "", incarnation being "",
+        scope_name being "", payload being "", lock_token being 0, active being no,
+        poisoned being no, outcome_unknown being no
+end paragraph
+
+failed_open receives session as durable_session, code as text,
+    outcome_unknown as boolean returns session_open_result begin paragraph
+    set session.active to no
+    set session.poisoned to yes
+    set session.outcome_unknown to outcome_unknown
+    set session.payload to ""
+    !!! Factory failure never leaks an owned descriptor. A lock from a lost
+    !!! context is not released through a different context's registry.
+    evaluate session.close with nothing
+    give build session_open_result with code being code, outcome_unknown being outcome_unknown,
+        session being session, receipt being (empty_object with nothing)
+end paragraph
+
+scope_of_payload receives payload as text returns text begin paragraph
+    value parsed is from_json with payload
+    when parsed.is_error with nothing then
+        give ""
+    end when
+    value found is field_text with node being (parsed.unwrap with nothing), key being "scope"
+    when found.is_error with nothing then
+        give ""
+    end when
+    value scope is found.unwrap with nothing
+    when (the length of scope) is less than 1 or (the length of scope) is greater than 128 then
+        give ""
+    end when
+    give scope
+end paragraph
+
+trim_trailing_slashes receives path as text returns text begin paragraph
+    variable amount as number is the length of path
+    repeat while amount is greater than 1
+        when (byte_at with s being path, index being amount minus 1) does not equal 47 then
+            stop repeating
+        end when
+        set amount to amount minus 1
+    end repeat
+    give substring with s being path, start being 0, length being amount
+end paragraph
+
+pin_directory receives path as text returns text begin paragraph
+    when (the length of path) equals 0 then
+        give ""
+    end when
+    !!! POSIX filesystem APIs preserve literal backslashes. Portable path
+    !!! helpers fold them into separators, so construct only with raw '/'.
+    when (byte_at with s being path, index being 0) equals 47 then
+        give trim_trailing_slashes with path being path
+    end when
+    value current is get_current_directory with nothing
+    when (the length of current) equals 0 then
+        give ""
+    end when
+    variable prefix as text is current plus "/"
+    when current equals "/" then
+        set prefix to "/"
+    end when
+    !!! Removing terminal separators keeps a named final component for the
+    !!! no-follow directory check; a symlink never inherits its target's mode.
+    give trim_trailing_slashes with path being prefix plus path
+end paragraph
+
+parent_directory receives path as text returns text begin paragraph
+    value selected is trim_trailing_slashes with path being path
+    variable position as number is (the length of selected) minus 1
+    repeat while position is at least 0
+        when (byte_at with s being selected, index being position) equals 47 then
+            when position equals 0 then
+                give "/"
+            end when
+            give substring with s being selected, start being 0, length being position
+        end when
+        set position to position minus 1
+    end repeat
+    give "."
+end paragraph
+
+public create_database receives directory as text, scope as text returns session_open_result begin paragraph
+    !!! Pin cwd-relative names for the whole session lifetime. This does not
+    !!! resolve symlinks or replace the trusted-ancestry requirement.
+    value selected_directory is pin_directory with path being directory
+    value owner is blank_session with nothing
+    when (create_private_directory with path being selected_directory).is_error with nothing then
+        give failed_open with session being owner, code being "exists", outcome_unknown being no
+    end when
+    value locked is acquire_file_lock with path being (selected_directory plus "/" plus (lock_name with nothing)), create being yes
+    when locked.is_error with nothing then
+        give failed_open with session being owner, code being "busy", outcome_unknown being no
+    end when
+    set owner.directory to selected_directory
+    set owner.lock_token to locked.unwrap with nothing
+    value database_id is random_hex with byte_count being 16
+    value incarnation is random_hex with byte_count being 16
+    when database_id.is_error with nothing or incarnation.is_error with nothing then
+        give failed_open with session being owner, code being "storage_error", outcome_unknown being no
+    end when
+    value staged is stage with mode being "create", committed being "",
+        database_id being (database_id.unwrap with nothing),
+        incarnation being (incarnation.unwrap with nothing), scope being scope,
+        request being (empty_object with nothing)
+    when not staged.ok then
+        give failed_open with session being owner, code being staged.code, outcome_unknown being no
+    end when
+    value receipt is from_json with staged.receipt
+    when receipt.is_error with nothing then
+        give failed_open with session being owner, code being "worker_protocol", outcome_unknown being no
+    end when
+    when (commit with directory being selected_directory, payload being staged.payload) does not equal "ok" then
+        give failed_open with session being owner, code being "storage_error", outcome_unknown being yes
+    end when
+    !!! Initial publication includes the new directory's own name.
+    when (sync_directory with path being (parent_directory with path being selected_directory)).is_error with nothing then
+        give failed_open with session being owner, code being "storage_error", outcome_unknown being yes
+    end when
+    set owner.database_id to database_id.unwrap with nothing
+    set owner.incarnation to incarnation.unwrap with nothing
+    set owner.scope_name to scope
+    set owner.payload to staged.payload
+    set owner.active to yes
+    give build session_open_result with code being "created", outcome_unknown being no,
+        session being owner, receipt being (receipt.unwrap with nothing)
+end paragraph
+
+public open_database receives directory as text returns session_open_result begin paragraph
+    !!! Pin cwd-relative names for the whole session lifetime. This does not
+    !!! resolve symlinks or replace the trusted-ancestry requirement.
+    value selected_directory is pin_directory with path being directory
+    value owner is blank_session with nothing
+    value private is is_private_directory with path being selected_directory
+    when private.is_error with nothing then
+        give failed_open with session being owner, code being "storage_error", outcome_unknown being no
+    end when
+    when not (private.unwrap with nothing) then
+        give failed_open with session being owner, code being "unsafe_directory", outcome_unknown being no
+    end when
+    value locked is acquire_file_lock with path being (selected_directory plus "/" plus (lock_name with nothing)), create being no
+    when locked.is_error with nothing then
+        give failed_open with session being owner, code being "busy", outcome_unknown being no
+    end when
+    set owner.directory to selected_directory
+    set owner.lock_token to locked.unwrap with nothing
+    value loaded is load_checkpoint with directory being selected_directory
+    when not loaded.ok then
+        give failed_open with session being owner, code being "corrupt", outcome_unknown being no
+    end when
+    value current is payload_metadata with payload being loaded.payload
+    value scope is scope_of_payload with payload being loaded.payload
+    when not current.ok or scope equals "" then
+        give failed_open with session being owner, code being "corrupt", outcome_unknown being no
+    end when
+    variable incarnation as text is ""
+    repeat forever
+        value drawn is random_hex with byte_count being 16
+        when drawn.is_error with nothing then
+            give failed_open with session being owner, code being "storage_error", outcome_unknown being no
+        end when
+        set incarnation to drawn.unwrap with nothing
+        when incarnation does not equal current.incarnation then
+            stop repeating
+        end when
+    end repeat
+    value recovered is stage with mode being "recover", committed being loaded.payload,
+        database_id being current.database_id, incarnation being incarnation, scope being "",
+        request being (empty_object with nothing)
+    when not recovered.ok then
+        give failed_open with session being owner, code being recovered.code, outcome_unknown being no
+    end when
+    value receipt is from_json with recovered.receipt
+    when receipt.is_error with nothing then
+        give failed_open with session being owner, code being "worker_protocol", outcome_unknown being no
+    end when
+    when (commit with directory being selected_directory, payload being recovered.payload) does not equal "ok" then
+        give failed_open with session being owner, code being "storage_error", outcome_unknown being yes
+    end when
+    set owner.database_id to current.database_id
+    set owner.incarnation to incarnation
+    set owner.scope_name to scope
+    set owner.payload to recovered.payload
+    set owner.active to yes
+    give build session_open_result with code being "ready", outcome_unknown being no,
+        session being owner, receipt being (receipt.unwrap with nothing)
+end paragraph
+
+note suite "enigma.host.bytes"
+an_empty_byte_sequence_remains_empty_text begin test
+    value octets as array of override byte is []
+    expect (text_of with octets being octets) equals ""
+    expect (the length of (bytes_of with content being (text_of with octets being octets))) equals 0
+end test
+
+note suite "enigma.host.bytes"
+chunk_boundaries_and_unpaired_merge_chunks_preserve_every_byte begin test
+    value sizes as array of number is [1, 1023, 1024, 1025, 2048, 2049, 3073]
+    repeat for each size in sizes
+        variable octets as array of override byte is []
+        repeat for index from 0 to size
+            !!! Exercise all non-NUL byte values, not just repeated ASCII.
+            append ((index remainder 255) plus 1) becomes override byte to octets
+        end repeat
+        value decoded is text_of with octets being octets
+        expect (the length of decoded) equals size
+        value restored is bytes_of with content being decoded
+        expect (the length of restored) equals size
+        repeat for index from 0 to size
+            expect (restored at index) equals (octets at index)
+        end repeat
+    end repeat
+end test
+
+note suite "enigma.host.bytes"
+a_multibyte_scalar_split_between_chunks_round_trips_unchanged begin test
+    variable prefix as text is ""
+    repeat for index from 0 to 1023
+        set prefix to prefix plus "x"
+    end repeat
+    value content is prefix plus "Ω" plus "tail"
+    value octets is bytes_of with content being content
+    expect (octets at 1023) equals (206 becomes override byte)
+    expect (octets at 1024) equals (169 becomes override byte)
+    value restored is text_of with octets being octets
+    expect restored equals content
+    value restored_octets is bytes_of with content being restored
+    expect (the length of restored_octets) equals (the length of octets)
+    repeat for index from 0 to (the length of octets)
+        expect (restored_octets at index) equals (octets at index)
+    end repeat
+end test
+
+note if_test_mode
+sample_id returns text begin paragraph
+    give "0123456789abcdef0123456789abcdef"
+end paragraph
+
+note if_test_mode
+other_id returns text begin paragraph
+    give "fedcba9876543210fedcba9876543210"
+end paragraph
+
+note if_test_mode
+built_payload receives database_id as text, incarnation as text, generation as number returns text begin paragraph
+    variable root is (new_object with nothing).unwrap with nothing
+    set root to (object_set with root, "database_id", (string_value with database_id).unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "incarnation", (string_value with incarnation).unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "generation",
+        (integer_value with (formatted "{generation}")).unwrap with nothing).unwrap with nothing
+    give (to_json with root).unwrap with nothing
+end paragraph
+
+note if_test_mode
+built_receipt receives code as text, instance as text, generation as number,
+    database_id as text, with_database as boolean returns `Value` begin paragraph
+    variable root is (new_object with nothing).unwrap with nothing
+    set root to (object_set with root, "code", (string_value with code).unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "instance", (string_value with instance).unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "generation",
+        (integer_value with (formatted "{generation}")).unwrap with nothing).unwrap with nothing
+    when with_database then
+        set root to (object_set with root, "database_id",
+            (string_value with database_id).unwrap with nothing).unwrap with nothing
+    end when
+    give root
+end paragraph
+
+note suite "enigma.host.candidate"
+a_matching_create_candidate_is_accepted begin test
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value candidate is built_payload with database_id being identity, incarnation being incarnation, generation being 0
+    value receipt is built_receipt with code being "created", instance being incarnation,
+        generation being 0, database_id being identity, with_database being yes
+    expect (check_candidate with mode being "create", committed being "", candidate being candidate,
+        receipt being receipt, database_id being identity, incarnation being incarnation) equals "ok"
+end test
+
+note suite "enigma.host.candidate"
+a_receipt_naming_another_instance_is_refused begin test
+    !!! The Python host caught this by corrupting a worker reply from outside.
+    !!! The check lives here now, so the case does too.
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value candidate is built_payload with database_id being identity, incarnation being incarnation, generation being 0
+    value receipt is built_receipt with code being "created", instance being "00000000000000000000000000000000",
+        generation being 0, database_id being identity, with_database being yes
+    expect (check_candidate with mode being "create", committed being "", candidate being candidate,
+        receipt being receipt, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+end test
+
+note suite "enigma.host.candidate"
+a_candidate_for_another_database_or_incarnation_is_refused begin test
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value wrong_database is built_payload with database_id being incarnation, incarnation being incarnation, generation being 0
+    value receipt is built_receipt with code being "created", instance being incarnation,
+        generation being 0, database_id being identity, with_database being yes
+    expect (check_candidate with mode being "create", committed being "", candidate being wrong_database,
+        receipt being receipt, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    value wrong_incarnation is built_payload with database_id being identity, incarnation being identity, generation being 0
+    expect (check_candidate with mode being "create", committed being "", candidate being wrong_incarnation,
+        receipt being receipt, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+end test
+
+note suite "enigma.host.candidate"
+a_generation_that_does_not_follow_the_committed_one_is_refused begin test
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value committed is built_payload with database_id being identity, incarnation being incarnation, generation being 4
+    value receipt is built_receipt with code being "ok", instance being incarnation,
+        generation being 5, database_id being identity, with_database being yes
+    value follows is built_payload with database_id being identity, incarnation being incarnation, generation being 5
+    expect (check_candidate with mode being "apply", committed being committed, candidate being follows,
+        receipt being receipt, database_id being identity, incarnation being incarnation) equals "ok"
+    !!! A skipped generation would let a lost commit pass unnoticed.
+    value skips is built_payload with database_id being identity, incarnation being incarnation, generation being 6
+    value skipping_receipt is built_receipt with code being "ok", instance being incarnation,
+        generation being 6, database_id being identity, with_database being yes
+    expect (check_candidate with mode being "apply", committed being committed, candidate being skips,
+        receipt being skipping_receipt, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    !!! Nor may it stand still while claiming to have advanced.
+    value stalls is built_payload with database_id being identity, incarnation being incarnation, generation being 4
+    expect (check_candidate with mode being "apply", committed being committed, candidate being stalls,
+        receipt being receipt, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+end test
+
+note suite "enigma.host.candidate"
+an_unchanged_denial_must_carry_no_metadata begin test
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value committed is built_payload with database_id being identity, incarnation being incarnation, generation being 2
+    value clean is built_receipt with code being "denied", instance being "", generation being 0,
+        database_id being identity, with_database being no
+    expect (check_candidate with mode being "apply", committed being committed, candidate being committed,
+        receipt being clean, database_id being identity, incarnation being incarnation) equals "ok"
+    !!! A denial that names an instance or a generation is claiming an effect
+    !!! it did not have.
+    value boastful is built_receipt with code being "denied", instance being incarnation, generation being 0,
+        database_id being identity, with_database being no
+    expect (check_candidate with mode being "apply", committed being committed, candidate being committed,
+        receipt being boastful, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    value extra is built_receipt with code being "denied", instance being "", generation being 0,
+        database_id being identity, with_database being yes
+    expect (check_candidate with mode being "apply", committed being committed, candidate being committed,
+        receipt being extra, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    !!! An unchanged payload with a success code is a contradiction.
+    value claiming is built_receipt with code being "ok", instance being "", generation being 0,
+        database_id being identity, with_database being no
+    expect (check_candidate with mode being "apply", committed being committed, candidate being committed,
+        receipt being claiming, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+end test
+
+note suite "enigma.host.candidate"
+a_denial_that_changed_state_still_advances_a_generation begin test
+    !!! Authorization can move the clock floor, so a denial may legitimately
+    !!! change the payload. Its receipt stays metadata free, and the candidate
+    !!! must still be the next generation.
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value committed is built_payload with database_id being identity, incarnation being incarnation, generation being 2
+    value changed is built_payload with database_id being identity, incarnation being incarnation, generation being 3
+    value clean is built_receipt with code being "denied", instance being "", generation being 0,
+        database_id being identity, with_database being no
+    expect (check_candidate with mode being "apply", committed being committed, candidate being changed,
+        receipt being clean, database_id being identity, incarnation being incarnation) equals "ok"
+end test
+
+note suite "enigma.host.candidate"
+a_refusal_may_not_leak_a_database_id_and_an_unknown_code_is_refused begin test
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value committed is built_payload with database_id being identity, incarnation being incarnation, generation being 1
+    value changed is built_payload with database_id being identity, incarnation being incarnation, generation being 2
+    value leaking is built_receipt with code being "limit", instance being "", generation being 0,
+        database_id being identity, with_database being yes
+    expect (check_candidate with mode being "apply", committed being committed, candidate being changed,
+        receipt being leaking, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    value unknown is built_receipt with code being "elsewhere", instance being "", generation being 0,
+        database_id being identity, with_database being no
+    expect (check_candidate with mode being "apply", committed being committed, candidate being changed,
+        receipt being unknown, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+end test
+
+note suite "enigma.host.candidate"
+a_create_reports_created_and_a_recovery_reports_ready begin test
+    value identity is sample_id with nothing
+    value incarnation is other_id with nothing
+    value first is built_payload with database_id being identity, incarnation being incarnation, generation being 0
+    value ready is built_receipt with code being "ready", instance being incarnation,
+        generation being 0, database_id being identity, with_database being yes
+    !!! A creation that reports readiness, or a recovery that reports creation,
+    !!! is not the transition the host asked for.
+    expect (check_candidate with mode being "create", committed being "", candidate being first,
+        receipt being ready, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    value committed is built_payload with database_id being identity, incarnation being identity, generation being 7
+    value next_payload is built_payload with database_id being identity, incarnation being incarnation, generation being 8
+    value created is built_receipt with code being "created", instance being incarnation,
+        generation being 8, database_id being identity, with_database being yes
+    expect (check_candidate with mode being "recover", committed being committed, candidate being next_payload,
+        receipt being created, database_id being identity, incarnation being incarnation) equals "worker_protocol"
+    value ready_now is built_receipt with code being "ready", instance being incarnation,
+        generation being 8, database_id being identity, with_database being yes
+    expect (check_candidate with mode being "recover", committed being committed, candidate being next_payload,
+        receipt being ready_now, database_id being identity, incarnation being incarnation) equals "ok"
+end test
+
+note suite "enigma.host.candidate"
+payload_metadata_requires_hex_identities_and_a_bounded_generation begin test
+    value identity is sample_id with nothing
+    value good is payload_metadata with payload being
+        (built_payload with database_id being identity, incarnation being identity, generation being 3)
+    expect good.ok
+    expect good.generation equals 3
+    expect (payload_metadata with payload being "").ok equals no
+    expect (payload_metadata with payload being "[]").ok equals no
+    !!! An identifier that is not 32 lowercase hex characters is not one the
+    !!! host issued, so it is never adopted.
+    expect (payload_metadata with payload being
+        (built_payload with database_id being "short", incarnation being identity, generation being 0)).ok equals no
+    expect (payload_metadata with payload being
+        (built_payload with database_id being identity, incarnation being "0123456789ABCDEF0123456789ABCDEF",
+            generation being 0)).ok equals no
+    expect (payload_metadata with payload being
+        (built_payload with database_id being identity, incarnation being identity, generation being minus 1)).ok equals no
+end test
+
+note suite "enigma.host.candidate"
+payload_metadata_rejects_duplicate_members_and_deep_nesting begin test
+    !!! The Python host needed an explicit strict-JSON pass for these, because
+    !!! Python's decoder accepts a repeated member and keeps the last one.
+    !!! NILData rejects it outright, so the host inherits the rejection rather
+    !!! than reimplementing it; this records that it actually holds.
+    value identity is sample_id with nothing
+    value duplicated is "{" plus quote plus "database_id" plus quote plus ":" plus quote plus identity plus quote
+        plus "," plus quote plus "database_id" plus quote plus ":" plus quote plus identity plus quote
+        plus "," plus quote plus "incarnation" plus quote plus ":" plus quote plus identity plus quote
+        plus "," plus quote plus "generation" plus quote plus ":0}"
+    expect (payload_metadata with payload being duplicated).ok equals no
+    !!! A nesting bound keeps a decoder from being driven into deep recursion.
+    variable deep as text is ""
+    repeat for index from 0 to 40
+        set deep to deep plus "["
+    end repeat
+    repeat for index from 0 to 40
+        set deep to deep plus "]"
+    end repeat
+    expect (payload_metadata with payload being deep).ok equals no
+    !!! A payload missing an identity field, or carrying a non-numeric
+    !!! generation, is not a state this host issued.
+    value missing is "{" plus quote plus "database_id" plus quote plus ":" plus quote plus identity plus quote plus "}"
+    expect (payload_metadata with payload being missing).ok equals no
+    value lettered is "{" plus quote plus "database_id" plus quote plus ":" plus quote plus identity plus quote
+        plus "," plus quote plus "incarnation" plus quote plus ":" plus quote plus identity plus quote
+        plus "," plus quote plus "generation" plus quote plus ":" plus quote plus "3" plus quote plus "}"
+    expect (payload_metadata with payload being lettered).ok equals no
+end test
+
+note suite "enigma.host.lifecycle"
+a_closed_session_is_idempotent_and_never_dispatches begin test
+    value owner is blank_session with nothing
+    expect (owner.close with nothing) equals "closed"
+    expect (owner.close with nothing) equals "closed"
+    value refused is owner.dispatch with request being (empty_object with nothing)
+    expect refused.code equals "closed"
+    expect not refused.outcome_unknown
+    expect ((size with refused.receipt).unwrap with nothing) equals 0
+    expect not owner.active
+    expect not owner.poisoned
+end test
+
+note suite "enigma.host.lifecycle"
+posix_path_pinning_preserves_literal_names_and_the_publication_parent begin test
+    expect (trim_trailing_slashes with path being "/") equals "/"
+    expect (pin_directory with path being "/tmp/enigma\\literal///") equals "/tmp/enigma\\literal"
+    expect (parent_directory with path being "/tmp/enigma\\literal///") equals "/tmp"
+    expect (parent_directory with path being "/one") equals "/"
+    expect (parent_directory with path being "/") equals "/"
+    expect (parent_directory with path being "/tmp/Ω\\name") equals "/tmp"
+    expect (pin_directory with path being "") equals ""
+    value current is get_current_directory with nothing
+    variable prefix as text is current plus "/"
+    when current equals "/" then set prefix to "/" end when
+    expect (pin_directory with path being "relative\\name/") equals prefix plus "relative\\name"
+    !!! Dot components retain filesystem meaning rather than being silently
+    !!! normalized through potentially symlinked ancestry.
+    expect (pin_directory with path being "a/../b") equals prefix plus "a/../b"
+end test
+
+note suite "enigma.host.lifecycle"
+invalidating_a_reply_discards_cached_state_and_requires_recovery begin test
+    value owner is blank_session with nothing
+    set owner.active to yes
+    set owner.payload to "cached authority must not survive"
+    set owner.lock_token to 84
+    evaluate owner.invalidate with nothing
+    expect not owner.active
+    expect owner.poisoned
+    expect owner.outcome_unknown
+    expect owner.payload equals ""
+    !!! Invalidation does not silently shorten an owned writer-lock lifetime.
+    expect owner.lock_token equals 84
+    value refused is owner.dispatch with request being (empty_object with nothing)
+    expect refused.code equals "poisoned"
+    expect refused.outcome_unknown
+    expect ((size with refused.receipt).unwrap with nothing) equals 0
+end test
+
+note suite "enigma.host.lifecycle"
+missing_lock_ownership_is_checked_before_cached_authority_or_request begin test
+    value owner is blank_session with nothing
+    set owner.active to yes
+    set owner.payload to "not a checkpoint"
+    value refused is owner.dispatch with request being (empty_object with nothing)
+    expect refused.code equals "lock_lost" or refused.code equals "lock_error"
+    expect not refused.outcome_unknown
+    expect ((size with refused.receipt).unwrap with nothing) equals 0
+    expect not owner.active
+    expect owner.poisoned
+    expect owner.payload equals ""
+    expect (owner.dispatch with request being (empty_object with nothing)).code equals "poisoned"
+    value unowned is blank_session with nothing
+    set unowned.active to yes
+    set unowned.payload to "not a checkpoint"
+    expect (unowned.close with nothing) equals "lock_error"
+    expect unowned.poisoned
+    expect not unowned.active
+    expect unowned.payload equals ""
+    expect (unowned.close with nothing) equals "closed"
+end test
