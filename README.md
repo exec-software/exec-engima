@@ -9,7 +9,8 @@ The engine and executable are **Enigma** and `enigma`.
 
 ## Current state
 
-**0.1.0-dev has a bounded evidence engine with a durable POSIX host.** A proposition is
+**0.1.0-dev includes a durable evidence engine and a separate application record
+store.** An evidence proposition is
 `(subject, relation, object_value)`. Supporting and opposing reports coexist,
 with source attribution and the acting entity/session. Withdrawing evidence
 appends an event; earlier snapshots keep their original meaning.
@@ -34,23 +35,28 @@ appends an event; earlier snapshots keep their original meaning.
   prior session grants, reclaims their rows, and retains the retirement mark
   before serving requests.
 
-This first slice tests a useful direction rather than committing to SQL or
-document-store architecture. [ENI-0001](docs/design/ENI-0001-evidence-and-authority.md)
-defines evidence semantics; [ENI-0002](docs/design/ENI-0002-durable-state-and-recovery.md)
+The [evidence contract](docs/design/ENI-0001-evidence-and-authority.md) defines
+evidence semantics. The [persistence contract](docs/design/ENI-0002-durable-state-and-recovery.md)
 defines commit and recovery behavior.
+
+The application record store preserves exact UTF-8 bodies up to 4 MiB. It
+supports conditional replacement by version and complete ordered enumeration,
+with explicit byte and key budgets. Its typed Matrix package is ready for local
+development on the pinned SDK. Goetic import and combined SDK qualification
+are separate work. [Record package](ext/enigma-records/README.md)
 
 Authority follows Anomalous's model, currently implemented as a trusted-host
 policy fixture. Matrix fields are public: this is **not isolation against hostile
 code in the same process**. Context identity and fresh logical ticks come from
 the embedding host. There is no authentication, network listener, query parser,
 encryption, or native Anomalous integration. The direct embedded client remains
-volatile; durable acknowledgements come through a persistence host or the
-importable `enigma.durable` session/client.
+volatile. Durable evidence acknowledgements come through a persistence host or
+`enigma.durable`. Application records use the importable `enigma.records` owner.
 
 ## Build and run
 
-For application integration, start with [Using Enigma in applications](docs/applications.md)
-and the persistent Matrix package under `ext/enigma-durable`.
+Choose a durable evidence or record package in the
+[application guide](docs/applications.md).
 
 Install or build a complete NIL SDK using the
 [development guide](docs/development.md). Discovery's optional text fields need
@@ -98,9 +104,9 @@ on request. All data disappears at process exit in this embedded demo. Durable
 stores also enforce separate encoded evidence and grant budgets; see
 [ENI-0008](docs/design/ENI-0008-bounded-capacity.md).
 
-## Persistence and recovery
+## Evidence persistence and recovery
 
-Build the Matrix storage worker, then explicitly create a new synthetic store:
+Build the Matrix evidence worker, then create a new synthetic evidence store:
 
 ```sh
 ./scripts/build-storage.sh --target all
@@ -140,10 +146,12 @@ power-cut behavior has not been qualified.
 | `src/enigma/authority.matrix` | Host grant lifecycle and authorization. |
 | `src/enigma/persistence.matrix` | Checkpoint codec and semantic recovery validation. |
 | `src/enigma/storage.matrix` | Staged durable operation and recovery transitions. |
+| `src/enigma/records/` | Durable application record index, authority, and owner. |
 | `storage/` | Separate Matrix storage-worker project. |
 | `scripts/store.py` | POSIX locking, integrity envelope, sync barriers, and receipts. |
 | `ext/enigma-client/` | Companion Matrix library, tests, and standalone example. |
-| `ext/enigma-durable/` | Shared durable session, typed application API, and persistent example. |
+| `ext/enigma-durable/` | Durable evidence session, typed client, and persistent example. |
+| `ext/enigma-records/` | Application record client and create/reopen example. |
 | `scripts/` | SDK selection, strict-bounds execution, and validation. |
 | [Design](docs/design/README.md) | Architecture, query direction, and first milestones. |
 | [Security](SECURITY.md) | Current limits, reporting, and intended threat boundaries. |

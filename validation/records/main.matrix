@@ -1,0 +1,247 @@
+book enigma.validation.records
+
+read flush, read_line, read_regular_bytes, write_bytes_durable from nil.std.io
+read arg_count, arg from nil.std.system
+read access_context from enigma.authority
+read record_access_limits from enigma.records.authority
+read create_record_database, open_record_database, record_owner from enigma.records.session
+read provision_record_host, connect_records, record_client from enigma.records.client
+
+announce receives message as text returns nothing begin paragraph
+    say message
+    evaluate flush with nothing
+    give nothing
+end paragraph
+
+fresh_context receives session_id as number, tick as number returns access_context begin paragraph
+    give build access_context with entity being "test:records", session being session_id, audience being "enigma", tick being tick
+end paragraph
+
+admit receives owner as record_owner, session_id as number, tick as number returns record_client begin paragraph
+    value limits is build record_access_limits with max_read_bytes being 4194304, max_write_bytes being 4194304,
+        max_scan_keys being 2048, max_list_keys being 2048, max_list_metadata_bytes being 524288
+    value issued is provision_record_host with owner being owner, entity being "test:records", session_id being session_id,
+        actions being 15, expires being 100, limits being limits, tick being tick
+    expect issued.confirmed
+    expect issued.receipt.code equals "ok"
+    give connect_records with owner being owner, grant_id being issued.receipt.grant_id
+end paragraph
+
+create_fixture receives directory as text, source as text returns override integer begin paragraph
+    value initialized is create_record_database with directory being directory, scope being "record-probe"
+    expect initialized.code equals "created"
+    value owner is initialized.owner
+    value store_limits is owner.describe_limits with nothing
+    expect store_limits.max_body_bytes equals 4194304
+    expect store_limits.max_keys equals 2048
+    value client is admit with owner being owner, session_id being 1, tick being 1
+    value caller is fresh_context with session_id being 1, tick being 2
+    value absent is client.get with caller being caller, key being "../empty", max_body_bytes being 0
+    expect absent.confirmed
+    expect absent.receipt.code equals "ok"
+    expect not absent.receipt.found
+    expect absent.receipt.version equals 0
+    expect absent.receipt.byte_length equals 0
+    value empty as array of override byte is []
+    value seed is client.put with caller being caller, key being "z:primary", content being empty, expected_version being 0
+    expect seed.confirmed
+    expect seed.receipt.code equals "ok"
+    expect seed.receipt.version equals 1
+    value stored_empty is client.put with caller being caller, key being "../empty", content being empty, expected_version being 0
+    expect stored_empty.confirmed
+    expect stored_empty.receipt.code equals "ok"
+    expect stored_empty.receipt.version equals 2
+    value observed_empty is client.get with caller being caller, key being "../empty", max_body_bytes being 0
+    expect observed_empty.confirmed
+    expect observed_empty.receipt.code equals "ok"
+    expect observed_empty.receipt.found
+    expect observed_empty.receipt.version equals 2
+    expect (the length of observed_empty.receipt.content) equals 0
+    value source_read is read_regular_bytes with path being source, maximum_bytes being 4194304
+    expect not (source_read.is_error with nothing)
+    value content is source_read.unwrap with nothing
+    value updated is client.put with caller being caller, key being "z:primary", content being content, expected_version being seed.receipt.version
+    expect updated.confirmed
+    expect updated.receipt.code equals "ok"
+    expect updated.receipt.version equals 3
+    expect updated.receipt.byte_length equals (the length of content)
+    evaluate announce with message being "records-written"
+    value later is fresh_context with session_id being 1, tick being 3
+    value create_conflict is client.put with caller being later, key being "z:primary", content being empty, expected_version being 0
+    expect create_conflict.confirmed
+    expect create_conflict.receipt.code equals "conflict"
+    expect create_conflict.receipt.version equals 0
+    expect not create_conflict.failure.outcome_unknown
+    value stale is client.put with caller being later, key being "z:primary", content being empty, expected_version being seed.receipt.version
+    expect stale.confirmed
+    expect stale.receipt.code equals "conflict"
+    expect stale.receipt.version equals 0
+    value read_limit is client.get with caller being later, key being "z:primary", max_body_bytes being ((the length of content) minus 1)
+    expect read_limit.confirmed
+    expect read_limit.receipt.code equals "limit"
+    expect not read_limit.receipt.found
+    expect (the length of read_limit.receipt.content) equals 0
+    value short_list is client.list_keys with caller being later, max_keys being 1, max_metadata_bytes being 524288, max_scan_keys being 2048
+    expect short_list.confirmed
+    expect short_list.receipt.code equals "limit"
+    expect not short_list.receipt.complete
+    expect (short_list.receipt.entries.count with nothing) equals 0
+    value listed is client.list_keys with caller being later, max_keys being 2, max_metadata_bytes being 524288, max_scan_keys being 2
+    expect listed.confirmed
+    expect listed.receipt.code equals "ok"
+    expect listed.receipt.complete
+    expect (listed.receipt.entries.count with nothing) equals 2
+    value first is (listed.receipt.entries.get with index being 0).unwrap with nothing
+    value second is (listed.receipt.entries.get with index being 1).unwrap with nothing
+    expect first.key equals "../empty"
+    expect first.version equals 2
+    expect second.key equals "z:primary"
+    expect second.version equals 3
+    expect (owner.close with nothing) equals "closed"
+    value closed is client.get with caller being later, key being "../empty", max_body_bytes being 0
+    expect not closed.confirmed
+    expect closed.failure.code equals "closed"
+    evaluate announce with message being "records-closed"
+    give 0
+end paragraph
+
+reopen_fixture receives directory as text, destination as text returns override integer begin paragraph
+    value opened is open_record_database with directory being directory, max_verify_bytes being 4194304
+    expect opened.code equals "ready"
+    value owner is opened.owner
+    value observed_state is owner.describe_state with nothing
+    expect observed_state.clock_floor equals 3
+    evaluate announce with message being "records-recovered"
+    value old is connect_records with owner being owner, grant_id being 1
+    value retired is old.get with caller being (fresh_context with session_id being 1, tick being 3), key being "z:primary", max_body_bytes being 4194304
+    expect retired.confirmed
+    expect retired.receipt.code equals "denied"
+    expect retired.receipt.version equals 0
+    value client is admit with owner being owner, session_id being 2, tick being 4
+    value stale is client.get with caller being (fresh_context with session_id being 2, tick being 3), key being "z:primary", max_body_bytes being 4194304
+    expect stale.confirmed
+    expect stale.receipt.code equals "denied"
+    value recovered is client.get with caller being (fresh_context with session_id being 2, tick being 4), key being "z:primary", max_body_bytes being 4194304
+    expect recovered.confirmed
+    expect recovered.receipt.code equals "ok"
+    expect recovered.receipt.found
+    expect recovered.receipt.version equals 3
+    value exported is write_bytes_durable with path being destination, content being recovered.receipt.content, replace being no
+    expect not (exported.is_error with nothing)
+    expect exported.unwrap with nothing
+    expect (owner.close with nothing) equals "closed"
+    evaluate announce with message being "records-exported"
+    give 0
+end paragraph
+
+inspect_open receives directory as text, max_verify as number returns override integer begin paragraph
+    value opened is open_record_database with directory being directory, max_verify_bytes being max_verify
+    expect not opened.outcome_unknown
+    expect (opened.owner.close with nothing) equals "closed"
+    evaluate announce with message being opened.code
+    give 0
+end paragraph
+
+fail_publication receives directory as text, uncertain as boolean returns override integer begin paragraph
+    value opened is open_record_database with directory being directory, max_verify_bytes being 4194304
+    expect opened.code equals "ready"
+    value owner is opened.owner
+    value client is admit with owner being owner, session_id being 2, tick being 4
+    evaluate announce with message being "fault-ready"
+    expect (read_line with nothing) equals "write"
+    value empty as array of override byte is []
+    value failed is client.put with caller being (fresh_context with session_id being 2, tick being 5), key being "new:record",
+        content being empty, expected_version being 0
+    expect not failed.confirmed
+    expect failed.failure.code equals "storage_error"
+    expect failed.failure.outcome_unknown equals uncertain
+    expect failed.receipt.version equals 0
+    evaluate announce with message being "publication-refused"
+    expect (read_line with nothing) equals "again"
+    value poisoned is client.put with caller being (fresh_context with session_id being 2, tick being 6), key being "new:record",
+        content being empty, expected_version being 0
+    expect not poisoned.confirmed
+    expect poisoned.failure.code equals "poisoned"
+    expect poisoned.failure.outcome_unknown equals uncertain
+    expect (owner.close with nothing) equals "closed"
+    evaluate announce with message being "poison-closed"
+    give 0
+end paragraph
+
+enumerate_fixture receives directory as text returns override integer begin paragraph
+    value opened is open_record_database with directory being directory, max_verify_bytes being 0
+    expect opened.code equals "ready"
+    value owner is opened.owner
+    evaluate announce with message being "large-index-open"
+    value client is admit with owner being owner, session_id being 2, tick being 4
+    value caller is fresh_context with session_id being 2, tick being 4
+    value limited is client.list_keys with caller being caller, max_keys being 2048,
+        max_metadata_bytes being 524288, max_scan_keys being 1024
+    expect limited.confirmed
+    expect limited.receipt.code equals "limit"
+    expect not limited.receipt.complete
+    expect (limited.receipt.entries.count with nothing) equals 0
+    value listed is client.list_keys with caller being caller, max_keys being 1025,
+        max_metadata_bytes being 524288, max_scan_keys being 1025
+    expect listed.confirmed
+    expect listed.receipt.code equals "ok"
+    expect listed.receipt.complete
+    expect (listed.receipt.entries.count with nothing) equals 1025
+    value first is (listed.receipt.entries.get with index being 0).unwrap with nothing
+    value last is (listed.receipt.entries.get with index being 1024).unwrap with nothing
+    expect first.key equals "item:000001"
+    expect first.version equals 1
+    expect last.key equals "item:001025"
+    expect last.version equals 1025
+    evaluate announce with message being "large-index-listed"
+    value content as array of override byte is []
+    value added is client.put with caller being caller, key being "item:001026", content being content, expected_version being 0
+    expect added.confirmed
+    expect added.receipt.code equals "ok"
+    expect added.receipt.version equals 1026
+    expect (owner.close with nothing) equals "closed"
+    evaluate announce with message being "large-index-extended"
+    give 0
+end paragraph
+
+corrupt_read receives directory as text returns override integer begin paragraph
+    value opened is open_record_database with directory being directory, max_verify_bytes being 4194304
+    expect opened.code equals "ready"
+    value owner is opened.owner
+    value client is admit with owner being owner, session_id being 2, tick being 4
+    evaluate announce with message being "read-ready"
+    expect (read_line with nothing) equals "read"
+    value failed is client.get with caller being (fresh_context with session_id being 2, tick being 5), key being "z:primary",
+        max_body_bytes being 4194304
+    expect not failed.confirmed
+    expect failed.failure.code equals "corrupt"
+    expect not failed.failure.outcome_unknown
+    expect not failed.receipt.found
+    expect failed.receipt.version equals 0
+    expect (the length of failed.receipt.content) equals 0
+    evaluate announce with message being "corrupt-read-refused"
+    expect (read_line with nothing) equals "again"
+    value poisoned is client.get with caller being (fresh_context with session_id being 2, tick being 5), key being "../empty",
+        max_body_bytes being 0
+    expect not poisoned.confirmed
+    expect poisoned.failure.code equals "poisoned"
+    expect (owner.close with nothing) equals "closed"
+    evaluate announce with message being "poison-closed"
+    give 0
+end paragraph
+
+main returns override integer begin paragraph
+    value amount is arg_count with nothing
+    when amount is less than 2 or amount is greater than 3 then give 2 end when
+    value mode is arg with index being 0
+    value directory is arg with index being 1
+    when mode equals "create" and amount equals 3 then give create_fixture with directory being directory, source being (arg with index being 2) end when
+    when mode equals "reopen" and amount equals 3 then give reopen_fixture with directory being directory, destination being (arg with index being 2) end when
+    when mode equals "observe" then give inspect_open with directory being directory, max_verify being 1073741824 end when
+    when mode equals "limited-open" then give inspect_open with directory being directory, max_verify being 0 end when
+    when mode equals "fault-body" then give fail_publication with directory being directory, uncertain being no end when
+    when mode equals "fault-manifest" then give fail_publication with directory being directory, uncertain being yes end when
+    when mode equals "corrupt-read" then give corrupt_read with directory being directory end when
+    when mode equals "enumerate" then give enumerate_fixture with directory being directory end when
+    give 2
+end paragraph

@@ -2,15 +2,15 @@ book enigma.durable.session
 
 read everything from nil.std.nildata
 read everything from nil.std.core
-read write_bytes_durable, read_regular_bytes, sync_directory,
-    acquire_file_lock, release_file_lock, file_lock_is_held, create_private_directory,
-    is_private_directory, is_private_regular_file, sha256_hex from nil.std.io
+read sync_directory, acquire_file_lock, release_file_lock, file_lock_is_held,
+    create_private_directory, is_private_directory from nil.std.io
+read from_byte from nil.std.text
 read get_current_directory from nil.std.system
-read byte_at, from_byte, char_at, contains, substring from nil.std.text
+read hex_id_ok, bytes_of, text_of, pin_directory, parent_directory, trim_trailing_slashes,
+    prepare_payload, publish_payload, load_payload from enigma.durable_io
 read random_hex from nil.std.security
 read stage_request_typed from enigma.storage
-read build_envelope, read_envelope, confirm_envelope,
-    exact_object, field_text, field_number, field_value from enigma.persistence
+read exact_object, field_text, field_number, field_value from enigma.persistence
 
 !!! Shared Matrix persistence owner. CLI and application clients use this one
 !!! implementation of validation, recovery, locking, and publication ordering.
@@ -37,80 +37,6 @@ end paragraph
 
 max_generation returns number begin paragraph
     give 9223372036854775807
-end paragraph
-
-!!! Exactly 32 lowercase hexadecimal characters, matching the identifiers the
-!!! Python host produced with secrets.token_hex(16).
-hex_id_ok receives candidate as text returns boolean begin paragraph
-    when (the length of candidate) does not equal 32 then
-        give no
-    end when
-    repeat for index from 0 to 32
-        value character is char_at with s being candidate, index being index
-        when not (contains with s being "0123456789abcdef", needle being character) then
-            give no
-        end when
-    end repeat
-    give yes
-end paragraph
-
-bytes_of receives content as text returns array of override byte begin paragraph
-    variable octets as array of override byte is []
-    value size is the length of content
-    variable offset as number is 0
-    repeat while offset is less than size
-        variable width as number is 1024
-        when size minus offset is less than width then
-            set width to size minus offset
-        end when
-        !!! Byte access may measure or copy its text argument. Keep that
-        !!! argument bounded rather than passing the full checkpoint per byte.
-        value block is substring with s being content, start being offset, length being width
-        repeat for index from 0 to width
-            append (byte_at with s being block, index being index) becomes override byte to octets
-        end repeat
-        set offset to offset plus width
-    end repeat
-    give octets
-end paragraph
-
-text_of receives octets as array of override byte returns text begin paragraph
-    !!! Keep per-byte copies bounded, then join complete chunks pairwise.
-    !!! Growing one prefix for an entire checkpoint copied its whole history
-    !!! for every byte. Text here remains raw bytes, including UTF-8 sequences
-    !!! split across a chunk boundary; no decoding or normalization occurs.
-    variable chunks as array of text is []
-    variable chunk as text is ""
-    variable held as number is 0
-    repeat for each octet in octets
-        set chunk to chunk plus (from_byte with code being octet becomes number)
-        set held to held plus 1
-        when held equals 1024 then
-            append chunk to chunks
-            set chunk to ""
-            set held to 0
-        end when
-    end repeat
-    when held is greater than 0 then
-        append chunk to chunks
-    end when
-    when (the length of chunks) equals 0 then
-        give ""
-    end when
-    repeat while (the length of chunks) is greater than 1
-        variable merged as array of text is []
-        variable index as number is 0
-        repeat while index is less than (the length of chunks)
-            when index plus 1 is less than (the length of chunks) then
-                append ((chunks at index) plus (chunks at (index plus 1))) to merged
-            otherwise
-                append (chunks at index) to merged
-            end when
-            set index to index plus 2
-        end repeat
-        set chunks to merged
-    end repeat
-    give chunks at 0
 end paragraph
 
 public metadata_view begin record
@@ -344,21 +270,12 @@ end paragraph
 !!! synchronization of the same publication directory. Nothing may acknowledge
 !!! before this returns, and an uncertain publication is never a success.
 commit receives directory as text, payload as text returns text begin paragraph
-    value digest is sha256_hex with data being (bytes_of with content being payload)
-    when digest.is_error with nothing then
+    value prepared is prepare_payload with payload being payload
+    when prepared.code does not equal "ok" then
         give "storage_error"
     end when
-    value envelope is build_envelope with payload being payload,
-        digest being (digest.unwrap with nothing)
-    when envelope.code does not equal "ok" then
-        give "storage_error"
-    end when
-    value written is write_bytes_durable with path being (directory plus "/" plus (checkpoint_name with nothing)),
-        content being (bytes_of with content being envelope.content), replace being yes
-    when written.is_error with nothing then
-        give "storage_error"
-    end when
-    give "ok"
+    give publish_payload with path being (directory plus "/" plus (checkpoint_name with nothing)),
+        prepared being prepared, replace being yes
 end paragraph
 
 public load_view begin record
@@ -373,43 +290,11 @@ end record
 !!! truncated, mis-digested, or semantically invalid checkpoint fails closed;
 !!! there is no fallback to an earlier snapshot.
 load_checkpoint receives directory as text returns load_view begin paragraph
-    value failed is build load_view with ok being no, payload being ""
-    value canonical is directory plus "/" plus (checkpoint_name with nothing)
-    !!! The Python host checked the opened descriptor: a regular file, owned by
-    !!! the effective user, singly linked, exactly 0600. read_regular_bytes
-    !!! rejects special files and will not follow the final component, but it
-    !!! accepts a loose mode and a second hard link, so the preflight is
-    !!! explicit here. It inspects a path, so it is weaker than a check on the
-    !!! descriptor that is then read; publication keeps its own checked open.
-    value private is is_private_regular_file with path being canonical
-    when private.is_error with nothing then
-        give failed
+    value loaded is load_payload with path being (directory plus "/" plus (checkpoint_name with nothing))
+    when not loaded.ok or not (payload_metadata with payload being loaded.payload).ok then
+        give build load_view with ok being no, payload being ""
     end when
-    when not (private.unwrap with nothing) then
-        give failed
-    end when
-    value raw is read_regular_bytes with path being canonical,
-        maximum_bytes being (checkpoint_limit with nothing)
-    when raw.is_error with nothing then
-        give failed
-    end when
-    value content is text_of with octets being (raw.unwrap with nothing)
-    value decoded is read_envelope with content being content
-    when decoded.code does not equal "ok" then
-        give failed
-    end when
-    value digest is sha256_hex with data being (bytes_of with content being decoded.payload)
-    when digest.is_error with nothing then
-        give failed
-    end when
-    when (confirm_envelope with decoded being decoded, computed being (digest.unwrap with nothing)) does not equal "ok" then
-        give failed
-    end when
-    value observed is payload_metadata with payload being decoded.payload
-    when not observed.ok then
-        give failed
-    end when
-    give build load_view with ok being yes, payload being decoded.payload
+    give build load_view with ok being yes, payload being loaded.payload
 end paragraph
 
 empty_object returns `Value` begin paragraph
@@ -595,54 +480,6 @@ scope_of_payload receives payload as text returns text begin paragraph
         give ""
     end when
     give scope
-end paragraph
-
-trim_trailing_slashes receives path as text returns text begin paragraph
-    variable amount as number is the length of path
-    repeat while amount is greater than 1
-        when (byte_at with s being path, index being amount minus 1) does not equal 47 then
-            stop repeating
-        end when
-        set amount to amount minus 1
-    end repeat
-    give substring with s being path, start being 0, length being amount
-end paragraph
-
-pin_directory receives path as text returns text begin paragraph
-    when (the length of path) equals 0 then
-        give ""
-    end when
-    !!! POSIX filesystem APIs preserve literal backslashes. Portable path
-    !!! helpers fold them into separators, so construct only with raw '/'.
-    when (byte_at with s being path, index being 0) equals 47 then
-        give trim_trailing_slashes with path being path
-    end when
-    value current is get_current_directory with nothing
-    when (the length of current) equals 0 then
-        give ""
-    end when
-    variable prefix as text is current plus "/"
-    when current equals "/" then
-        set prefix to "/"
-    end when
-    !!! Removing terminal separators keeps a named final component for the
-    !!! no-follow directory check; a symlink never inherits its target's mode.
-    give trim_trailing_slashes with path being prefix plus path
-end paragraph
-
-parent_directory receives path as text returns text begin paragraph
-    value selected is trim_trailing_slashes with path being path
-    variable position as number is (the length of selected) minus 1
-    repeat while position is at least 0
-        when (byte_at with s being selected, index being position) equals 47 then
-            when position equals 0 then
-                give "/"
-            end when
-            give substring with s being selected, start being 0, length being position
-        end when
-        set position to position minus 1
-    end repeat
-    give "."
 end paragraph
 
 public create_database receives directory as text, scope as text returns session_open_result begin paragraph

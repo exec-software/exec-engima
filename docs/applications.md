@@ -1,23 +1,39 @@
 # Using Enigma in applications
 
-Use the durable application package for data that must survive process exit.
-The earlier `enigma.client` package remains an in-memory interface. Both use
-the same evidence model and permission rules.
+Enigma has durable owners for evidence and application records. Evidence
+captures claims, polarity, and provenance. Application records preserve
+versioned bodies by exact key.
 
 ## Choose the application boundary
 
 | Application | Integration |
 | --- | --- |
-| Matrix/NIL process | Import `enigma.durable.session` and `enigma.durable.client` from `ext/enigma-durable`. |
-| Another runtime | Use a trusted adapter over the bounded JSON host protocol in [persistence.md](persistence.md). |
-| Short-lived, volatile computation | Use `enigma.client` and explicitly accept process-local data. |
+| Durable application records | Import `enigma.records.session` and `enigma.records.client`. See the [record package](../ext/enigma-records/README.md). |
+| Durable evidence in a Matrix/NIL process | Import `enigma.durable.session` and `enigma.durable.client` from `ext/enigma-durable`. |
+| Durable evidence in another runtime | Use a trusted adapter over the bounded JSON host protocol in [persistence.md](persistence.md). |
+| Process-local evidence | Use `enigma.client`. |
 
-The Matrix CLI and embedded durable package share one filesystem/session
-implementation. Applications do not need to copy checkpoint, locking, or
-recovery code. The Python host remains available. There is no network listener
-or authentication service in this integration.
+## Store application records
 
-## Run the application example
+The record owner stores UTF-8 byte arrays up to 4 MiB. A key can be absent,
+present with an empty body, or present with content. Use the positive version
+returned by `get` or `put` for compare-and-set replacement. Version zero is
+create-only. Enumeration returns a complete batch or an empty `limit`
+receipt. Owners expose the current clock floor through `describe_state()`
+and hard storage ceilings through `describe_limits()`.
+
+Use the [record package guide](../ext/enigma-records/README.md) to build the
+synthetic create/reopen example and run `scripts/test-records.sh`. The local
+profile has one writer, up to 2,048 live keys, and separate index, grant, body,
+and aggregate byte limits. Open verifies the bodies under `max_verify_bytes`
+and commits a fresh incarnation before accepting calls. Replaced bodies and
+orphans still occupy disk. Goetic import and combined SDK qualification are
+separate work. [Record contract](design/ENI-0009-application-records.md)
+
+## Run the evidence example
+
+The Matrix CLI and embedded durable evidence package share a session
+implementation. The Python evidence host supports the same bounded protocol.
 
 Select the matching complete SDK from the [development guide](development.md),
 then build and exercise the package:
@@ -39,7 +55,7 @@ For an application project, add Enigma's `src` and
 the owner lifecycle and typed client books. Package-manager distribution is
 future work; the source includes are explicit for now.
 
-## Keep admission with the host
+## Keep evidence admission with the host
 
 `create_database(directory, scope)` creates only a new directory.
 `open_database(directory)` opens only a valid existing store and commits
@@ -98,10 +114,10 @@ execution, or a handle that lost its lock, cannot resume authority. Storage or
 protocol failures poison the owner and prevent subsequent requests. Working
 directory changes do not redirect its pinned database path.
 
-## Current application limits
+## Current evidence limits
 
-This is an early local POSIX integration for bounded workloads: one store scope,
-1,024 retained events, 256 retained grant rows, and a 512 KiB payload ceiling.
+The local POSIX evidence profile has one store scope, 1,024 retained events,
+256 retained grant rows, and a 512 KiB payload ceiling.
 Assertions stop at 1,023 retained events, leaving one slot for withdrawal.
 Read work ranges from 1 through 1,024, while returned evidence stays capped at
 128 items. A complete scan can therefore return a partial evidence list; there

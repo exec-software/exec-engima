@@ -1,0 +1,117 @@
+book enigma.records.manifest
+
+read everything from nil.std.nildata
+read everything from nil.std.core.result
+read exact_object, field_text, field_number, field_value from enigma.persistence
+read hex_id_ok from enigma.durable_io
+read valid_key from enigma.records.bytes
+read record_index, open_record_index, encode_record_index, decode_record_index from enigma.records.index
+read record_authority_registry, open_record_authority, encode_record_authority, decode_record_authority from enigma.records.authority
+
+public record_manifest begin class
+    field database_id as text
+    field incarnation as text
+    field scope as text
+    field generation as number
+    field index as record_index
+    field authority as record_authority_registry
+end class
+
+public manifest_load begin record
+    field code as text
+    field state as record_manifest
+end record
+
+public new_record_manifest receives database_id as text, incarnation as text, scope as text returns record_manifest begin paragraph
+    give build record_manifest with database_id being database_id, incarnation being incarnation, scope being scope,
+        generation being 0, index being (open_record_index with nothing), authority being (open_record_authority with nothing)
+end paragraph
+
+public valid_record_scope receives scope as text returns boolean begin paragraph
+    give (the length of scope) is at most 128 and (valid_key with key being scope)
+end paragraph
+
+manifest_fields receives state as record_manifest returns boolean begin paragraph
+    give (hex_id_ok with candidate being state.database_id) and (hex_id_ok with candidate being state.incarnation) and
+        (valid_record_scope with scope being state.scope) and state.generation is at least 0 and state.generation is at most 2147483646
+end paragraph
+
+public encode_record_manifest receives state as record_manifest returns Result of text, text begin paragraph
+    when not (manifest_fields with state being state) then
+        give Result.Error holding "corrupt"
+    end when
+    value grants is encode_record_authority with registry being state.authority, scope being state.scope
+    when grants.is_error with nothing then
+        give Result.Error holding (grants.unwrap_error with nothing)
+    end when
+    value rows is encode_record_index with index being state.index
+    when rows.is_error with nothing then
+        give Result.Error holding (rows.unwrap_error with nothing)
+    end when
+    !!! Only validated bounded scalars and checked table values reach the codec.
+    variable root is (new_object with nothing).unwrap with nothing
+    set root to (object_set with root, "schema", (string_value with "enigma.records.v1").unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "database_id", (string_value with state.database_id).unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "incarnation", (string_value with state.incarnation).unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "scope", (string_value with state.scope).unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "generation", (integer_value with formatted "{state.generation}").unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "sequence", (integer_value with formatted "{state.index.sequence}").unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "live_bytes", (integer_value with formatted "{state.index.live_bytes}").unwrap with nothing).unwrap with nothing
+    set root to (object_set with root, "authority", (grants.unwrap with nothing)).unwrap with nothing
+    set root to (object_set with root, "index", (rows.unwrap with nothing)).unwrap with nothing
+    value serialized is to_json with root
+    when serialized.is_error with nothing then
+        give Result.Error holding "corrupt"
+    end when
+    value payload is serialized.unwrap with nothing
+    when (the length of payload) is greater than 524288 then
+        give Result.Error holding "capacity"
+    end when
+    give Result.Ok holding payload
+end paragraph
+
+public decode_record_manifest receives payload as text returns manifest_load begin paragraph
+    value blank is new_record_manifest with database_id being "", incarnation being "", scope being ""
+    value failed is build manifest_load with code being "corrupt", state being blank
+    when (the length of payload) is greater than 524288 then
+        give failed
+    end when
+    value parsed is from_json with payload
+    when parsed.is_error with nothing then
+        give failed
+    end when
+    value root is parsed.unwrap with nothing
+    value keys as array of text is ["schema", "database_id", "incarnation", "scope", "generation", "sequence", "live_bytes", "authority", "index"]
+    when not (exact_object with node being root, keys being keys) then
+        give failed
+    end when
+    value schema is field_text with node being root, key being "schema"
+    value database_id is field_text with node being root, key being "database_id"
+    value incarnation is field_text with node being root, key being "incarnation"
+    value scope is field_text with node being root, key being "scope"
+    value generation is field_number with node being root, key being "generation"
+    value sequence is field_number with node being root, key being "sequence"
+    value live_bytes is field_number with node being root, key being "live_bytes"
+    when schema.is_error with nothing or database_id.is_error with nothing or incarnation.is_error with nothing or
+        scope.is_error with nothing or generation.is_error with nothing or sequence.is_error with nothing or live_bytes.is_error with nothing then
+        give failed
+    end when
+    when (schema.unwrap with nothing) does not equal "enigma.records.v1" then
+        give failed
+    end when
+    value state is new_record_manifest with database_id being (database_id.unwrap with nothing),
+        incarnation being (incarnation.unwrap with nothing), scope being (scope.unwrap with nothing)
+    set state.generation to generation.unwrap with nothing
+    when not (manifest_fields with state being state) then
+        give failed
+    end when
+    value decoded_index is decode_record_index with node being (field_value with node being root, key being "index"),
+        sequence being (sequence.unwrap with nothing), live_bytes being (live_bytes.unwrap with nothing)
+    value decoded_authority is decode_record_authority with node being (field_value with node being root, key being "authority"), scope being state.scope
+    when decoded_index.code does not equal "ok" or decoded_authority.code does not equal "ok" then
+        give failed
+    end when
+    set state.index to decoded_index.index
+    set state.authority to decoded_authority.registry
+    give build manifest_load with code being "ok", state being state
+end paragraph

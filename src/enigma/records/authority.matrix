@@ -1,0 +1,549 @@
+book enigma.records.authority
+
+read everything from nil.std.nildata
+read everything from nil.std.core.result
+read everything from nil.std.core.option
+read access_context, authority_registry, open_authority from enigma.authority
+read exact_object, field_value, field_text, field_number, field_boolean from enigma.persistence
+read valid_key from enigma.records.bytes
+
+public record_access_limits begin record
+    field max_read_bytes as number
+    field max_write_bytes as number
+    field max_scan_keys as number
+    field max_list_keys as number
+    field max_list_metadata_bytes as number
+end record
+
+public record_grant_receipt begin record
+    field code as text
+    field grant_id as number
+end record
+
+public record_access_decision begin record
+    field code as text
+    field limits as record_access_limits
+end record
+
+empty_limits returns record_access_limits begin paragraph
+    give build record_access_limits with max_read_bytes being 0, max_write_bytes being 0,
+        max_scan_keys being 0, max_list_keys being 0, max_list_metadata_bytes being 0
+end paragraph
+
+refused_grant receives code as text returns record_grant_receipt begin paragraph
+    give build record_grant_receipt with code being code, grant_id being 0
+end paragraph
+
+denied_access returns record_access_decision begin paragraph
+    give build record_access_decision with code being "denied", limits being (empty_limits with nothing)
+end paragraph
+
+valid_label receives input as text returns boolean begin paragraph
+    give (the length of input) is at most 128 and (valid_key with key being input)
+end paragraph
+
+valid_identifier receives identifier as number returns boolean begin paragraph
+    give identifier is greater than 0 and identifier is at most 2147483646
+end paragraph
+
+valid_limits receives limits as record_access_limits returns boolean begin paragraph
+    give limits.max_read_bytes is at least 0 and limits.max_read_bytes is at most 4194304 and
+        limits.max_write_bytes is at least 0 and limits.max_write_bytes is at most 4194304 and
+        limits.max_scan_keys is at least 0 and limits.max_scan_keys is at most 2048 and
+        limits.max_list_keys is at least 0 and limits.max_list_keys is at most 2048 and
+        limits.max_list_metadata_bytes is at least 0 and limits.max_list_metadata_bytes is at most 524288
+end paragraph
+
+within_limits receives child as record_access_limits, parent as record_access_limits returns boolean begin paragraph
+    give child.max_read_bytes is at most parent.max_read_bytes and child.max_write_bytes is at most parent.max_write_bytes and
+        child.max_scan_keys is at most parent.max_scan_keys and child.max_list_keys is at most parent.max_list_keys and
+        child.max_list_metadata_bytes is at most parent.max_list_metadata_bytes
+end paragraph
+
+!!! A private backing registry is created for this profile only. Its holder,
+!!! time and ancestry rules are shared with evidence, but its rows are issued
+!!! exclusively through this class and its persistent schema cannot load
+!!! evidence grants. Matrix fields remain accessible to trusted host code.
+public record_authority_registry begin class
+    field identities as authority_registry
+    field read_bytes as array of number
+    field write_bytes as array of number
+    field list_metadata_bytes as array of number
+
+    ready returns boolean begin paragraph
+        give my identities.grant_count is at least 0 and my identities.grant_count is at most 256 and
+            (the length of my read_bytes) equals my identities.grant_count and
+            (the length of my write_bytes) equals my identities.grant_count and
+            (the length of my list_metadata_bytes) equals my identities.grant_count
+    end paragraph
+
+    index_of receives grant_id as number returns number begin paragraph
+        when grant_id is at most my identities.retired_through or grant_id is at least my identities.next_grant_id then
+            give minus 1
+        end when
+        value index is grant_id minus my identities.retired_through minus 1
+        when index is less than 0 or index is at least my identities.grant_count or
+            index is at least (the length of my identities.grant_ids) or (my identities.grant_ids at index) does not equal grant_id then
+            give minus 1
+        end when
+        give index
+    end paragraph
+
+    !!! The backing count fields use count+1 to represent zero without
+    !!! changing its positive-limit contract. Byte ceilings remain independent.
+    public limits_at receives index as number returns record_access_limits begin paragraph
+        give build record_access_limits with max_read_bytes being (my read_bytes at index),
+            max_write_bytes being (my write_bytes at index),
+            max_scan_keys being ((my identities.work_limits at index) minus 1),
+            max_list_keys being ((my identities.result_limits at index) minus 1),
+            max_list_metadata_bytes being (my list_metadata_bytes at index)
+    end paragraph
+
+    append_limits receives limits as record_access_limits returns nothing begin paragraph
+        append limits.max_read_bytes to my read_bytes
+        append limits.max_write_bytes to my write_bytes
+        append limits.max_list_metadata_bytes to my list_metadata_bytes
+        give nothing
+    end paragraph
+
+    public install receives entity as text, session_id as number, scope as text, actions as number,
+        expires as number, limits as record_access_limits, tick as number returns record_grant_receipt begin paragraph
+        when not (my ready with nothing) or not (valid_label with input being entity) or not (valid_label with input being scope) or
+            not (valid_identifier with identifier being session_id) or not (valid_identifier with identifier being expires) or
+            tick is less than my identities.clock_floor or tick is less than 0 or tick is at least expires or
+            actions is less than 1 or actions is greater than 15 or not (valid_limits with limits being limits) then
+            give refused_grant with code being "invalid"
+        end when
+        !!! A valid host admission observes time even if its trial allocation
+        !!! does not fit. The owner commits that floor on capacity refusal.
+        set my identities.clock_floor to tick
+        when my identities.grant_count is at least 256 or my identities.next_grant_id is at least 2147483646 then
+            give refused_grant with code being "capacity"
+        end when
+        value installed is my identities.install with entity being entity, session being session_id,
+            scope being scope, operations being actions, expires being expires, tick being tick,
+            work_limit being (limits.max_scan_keys plus 1), result_limit being (limits.max_list_keys plus 1)
+        when installed.code does not equal "ok" then
+            give refused_grant with code being installed.code
+        end when
+        evaluate my append_limits with limits being limits
+        give build record_grant_receipt with code being "ok", grant_id being installed.grant_id
+    end paragraph
+
+    public authorize receives caller as access_context, grant_id as number, scope as text,
+        action as number returns record_access_decision begin paragraph
+        when not (my ready with nothing) or caller.tick is greater than 2147483646 or
+            not (valid_label with input being caller.entity) or not (valid_identifier with identifier being caller.session) then
+            give denied_access with nothing
+        end when
+        !!! The holder check observes a valid tick even when the grant or
+        !!! requested action is refused. The durable owner must commit it.
+        value checked is my identities.authorize with caller being caller, grant_id being grant_id,
+            scope being scope, operation being action
+        when checked.code does not equal "ok" or (action does not equal 1 and action does not equal 2 and action does not equal 4 and action does not equal 8) then
+            give denied_access with nothing
+        end when
+        value index is my index_of with grant_id being grant_id
+        when index is less than 0 then
+            give denied_access with nothing
+        end when
+        give build record_access_decision with code being "ok", limits being (my limits_at with index being index)
+    end paragraph
+
+    public delegate receives caller as access_context, parent_id as number, entity as text, session_id as number,
+        actions as number, expires as number, limits as record_access_limits returns record_grant_receipt begin paragraph
+        value index is my index_of with grant_id being parent_id
+        variable scope as text is ""
+        when index is at least 0 and index is less than (the length of my identities.scopes) then
+            set scope to my identities.scopes at index
+        end when
+        value authorized is my authorize with caller being caller, grant_id being parent_id, scope being scope, action being 8
+        when authorized.code does not equal "ok" then
+            give refused_grant with code being "denied"
+        end when
+        when not (valid_label with input being entity) or not (valid_identifier with identifier being session_id) or
+            not (valid_identifier with identifier being expires) or expires is at most caller.tick or
+            expires is greater than (my identities.expiries at index) or actions is less than 1 or actions is greater than 15 or
+            (actions bitwise and (my identities.rights at index)) does not equal actions or
+            not (valid_limits with limits being limits) or not (within_limits with child being limits, parent being authorized.limits) then
+            give refused_grant with code being "denied"
+        end when
+        when my identities.grant_count is at least 256 or my identities.next_grant_id is at least 2147483646 then
+            give refused_grant with code being "capacity"
+        end when
+        value issued is my identities.delegate with caller being caller, parent_id being parent_id, entity being entity,
+            session being session_id, operations being actions, expires being expires,
+            work_limit being (limits.max_scan_keys plus 1), result_limit being (limits.max_list_keys plus 1)
+        when issued.code does not equal "ok" then
+            give refused_grant with code being issued.code
+        end when
+        evaluate my append_limits with limits being limits
+        give build record_grant_receipt with code being "ok", grant_id being issued.grant_id
+    end paragraph
+
+    public revoke receives caller as access_context, grant_id as number returns record_grant_receipt begin paragraph
+        when not (my ready with nothing) or caller.tick is greater than 2147483646 or
+            not (valid_label with input being caller.entity) or not (valid_identifier with identifier being caller.session) then
+            give refused_grant with code being "denied"
+        end when
+        value revoked is my identities.revoke with caller being caller, grant_id being grant_id
+        give build record_grant_receipt with code being revoked.code, grant_id being revoked.grant_id
+    end paragraph
+
+    public retire_and_reclaim returns number begin paragraph
+        value retired is my identities.retire_and_reclaim with nothing
+        set my read_bytes to []
+        set my write_bytes to []
+        set my list_metadata_bytes to []
+        give retired
+    end paragraph
+end class
+
+public open_record_authority returns record_authority_registry begin paragraph
+    give build record_authority_registry with identities being (open_authority with nothing),
+        read_bytes being [], write_bytes being [], list_metadata_bytes being []
+end paragraph
+
+public record_authority_decode begin record
+    field code as text
+    field registry as record_authority_registry
+end record
+
+bad_authority returns record_authority_decode begin paragraph
+    give build record_authority_decode with code being "corrupt", registry being (open_record_authority with nothing)
+end paragraph
+
+valid_authority receives registry as record_authority_registry, scope as text returns boolean begin paragraph
+    value state is registry.identities
+    value count is state.grant_count
+    when not (valid_label with input being scope) or count is less than 0 or count is greater than 256 or
+        state.clock_floor is less than 0 or state.clock_floor is greater than 2147483646 or
+        not (valid_identifier with identifier being state.next_grant_id) or state.retired_through is less than 0 or
+        state.retired_through is at least state.next_grant_id or
+        state.next_grant_id minus state.retired_through minus 1 does not equal count then
+        give no
+    end when
+    when (the length of state.grant_ids) does not equal count or (the length of state.holder_entities) does not equal count or
+        (the length of state.holder_sessions) does not equal count or (the length of state.scopes) does not equal count or
+        (the length of state.rights) does not equal count or (the length of state.expiries) does not equal count or
+        (the length of state.work_limits) does not equal count or (the length of state.result_limits) does not equal count or
+        (the length of state.parents) does not equal count or (the length of state.revoked) does not equal count or
+        (the length of registry.read_bytes) does not equal count or (the length of registry.write_bytes) does not equal count or
+        (the length of registry.list_metadata_bytes) does not equal count then
+        give no
+    end when
+    repeat for index from 0 to count
+        value identifier is state.grant_ids at index
+        value actions is state.rights at index
+        value parent is state.parents at index
+        value limits is registry.limits_at with index being index
+        when identifier does not equal state.retired_through plus index plus 1 or
+            not (valid_label with input being state.holder_entities at index) or
+            not (valid_identifier with identifier being state.holder_sessions at index) or
+            (state.scopes at index) does not equal scope or actions is less than 1 or actions is greater than 15 or
+            not (valid_identifier with identifier being state.expiries at index) or
+            not (valid_limits with limits being limits) or parent is less than 0 or parent is at least identifier then
+            give no
+        end when
+        when parent is greater than 0 then
+            when parent is at most state.retired_through then
+                give no
+            end when
+            value earlier is parent minus state.retired_through minus 1
+            value inherited is state.rights at earlier
+            when (inherited bitwise and 8) does not equal 8 or (actions bitwise and inherited) does not equal actions or
+                (state.expiries at index) is greater than (state.expiries at earlier) or
+                not (within_limits with child being limits, parent being (registry.limits_at with index being earlier)) then
+                give no
+            end when
+        end when
+    end repeat
+    give yes
+end paragraph
+
+authority_writer begin class
+    field valid as boolean
+
+    public write_value receives node as `Value`, key as text, child as `Value` returns `Value` begin paragraph
+        value updated is object_set with node, key, child
+        when updated.is_error with nothing then
+            set my valid to no
+            give node
+        end when
+        give updated.unwrap with nothing
+    end paragraph
+
+    public write_text receives node as `Value`, key as text, content as text returns `Value` begin paragraph
+        value child is string_value with content
+        when child.is_error with nothing then
+            set my valid to no
+            give node
+        end when
+        give my write_value with node being node, key being key, child being (child.unwrap with nothing)
+    end paragraph
+
+    public write_number receives node as `Value`, key as text, amount as number returns `Value` begin paragraph
+        value child is integer_value with formatted "{amount}"
+        when child.is_error with nothing then
+            set my valid to no
+            give node
+        end when
+        give my write_value with node being node, key being key, child being (child.unwrap with nothing)
+    end paragraph
+end class
+
+public encode_record_authority receives registry as record_authority_registry, scope as text returns Result of `Value`, text begin paragraph
+    when not (valid_authority with registry being registry, scope being scope) then
+        give Result.Error holding "corrupt"
+    end when
+    value state is registry.identities
+    value writer is build authority_writer with valid being yes
+    variable grants is (new_array with nothing).unwrap with nothing
+    repeat for index from 0 to state.grant_count
+        value limits is registry.limits_at with index being index
+        variable row is (new_object with nothing).unwrap with nothing
+        set row to writer.write_number with node being row, key being "id", amount being state.grant_ids at index
+        set row to writer.write_text with node being row, key being "entity", content being state.holder_entities at index
+        set row to writer.write_number with node being row, key being "session", amount being state.holder_sessions at index
+        set row to writer.write_text with node being row, key being "audience", content being "enigma"
+        set row to writer.write_text with node being row, key being "scope", content being scope
+        set row to writer.write_number with node being row, key being "actions", amount being state.rights at index
+        set row to writer.write_number with node being row, key being "expires", amount being state.expiries at index
+        set row to writer.write_number with node being row, key being "parent", amount being state.parents at index
+        set row to writer.write_value with node being row, key being "revoked", child being (boolean_value with (state.revoked at index)).unwrap with nothing
+        set row to writer.write_number with node being row, key being "max_read_bytes", amount being limits.max_read_bytes
+        set row to writer.write_number with node being row, key being "max_write_bytes", amount being limits.max_write_bytes
+        set row to writer.write_number with node being row, key being "max_scan_keys", amount being limits.max_scan_keys
+        set row to writer.write_number with node being row, key being "max_list_keys", amount being limits.max_list_keys
+        set row to writer.write_number with node being row, key being "max_list_metadata_bytes", amount being limits.max_list_metadata_bytes
+        value appended is array_append with grants, row
+        when not writer.valid or appended.is_error with nothing then
+            give Result.Error holding "corrupt"
+        end when
+        set grants to appended.unwrap with nothing
+    end repeat
+    value encoded_grants is to_json with grants
+    when encoded_grants.is_error with nothing then
+        give Result.Error holding "corrupt"
+    end when
+    when (the length of (encoded_grants.unwrap with nothing)) is greater than 65536 then
+        give Result.Error holding "capacity"
+    end when
+    variable node is (new_object with nothing).unwrap with nothing
+    set node to writer.write_number with node being node, key being "clock_floor", amount being state.clock_floor
+    set node to writer.write_number with node being node, key being "next_grant_id", amount being state.next_grant_id
+    set node to writer.write_number with node being node, key being "retired_through", amount being state.retired_through
+    set node to writer.write_value with node being node, key being "grants", child being grants
+    when not writer.valid then
+        give Result.Error holding "corrupt"
+    end when
+    give Result.Ok holding node
+end paragraph
+
+authority_reader begin class
+    field valid as boolean
+
+    public read_text receives node as `Value`, key as text returns text begin paragraph
+        value found is field_text with node being node, key being key
+        when found.is_error with nothing then
+            set my valid to no
+            give ""
+        end when
+        give found.unwrap with nothing
+    end paragraph
+
+    public read_number receives node as `Value`, key as text returns number begin paragraph
+        value found is field_number with node being node, key being key
+        when found.is_error with nothing then
+            set my valid to no
+            give 0
+        end when
+        value amount is found.unwrap with nothing
+        when amount is less than 0 or amount is greater than 2147483646 then
+            set my valid to no
+            give 0
+        end when
+        give amount
+    end paragraph
+
+    public read_boolean receives node as `Value`, key as text returns boolean begin paragraph
+        value found is field_boolean with node being node, key being key
+        when found.is_error with nothing then
+            set my valid to no
+            give no
+        end when
+        give found.unwrap with nothing
+    end paragraph
+end class
+
+public decode_record_authority receives node as `Value`, scope as text returns record_authority_decode begin paragraph
+    value keys as array of text is ["clock_floor", "next_grant_id", "retired_through", "grants"]
+    when not (exact_object with node being node, keys being keys) then
+        give bad_authority with nothing
+    end when
+    value grants is field_value with node being node, key being "grants"
+    value shape is kind with grants
+    value count_value is size with grants
+    when shape.is_error with nothing or count_value.is_error with nothing then
+        give bad_authority with nothing
+    end when
+    value count is count_value.unwrap with nothing
+    when (shape.unwrap with nothing) does not equal "array" or count is greater than 256 then
+        give bad_authority with nothing
+    end when
+    value encoded_grants is to_json with grants
+    when encoded_grants.is_error with nothing or (the length of (encoded_grants.unwrap with nothing)) is greater than 65536 then
+        give bad_authority with nothing
+    end when
+    value registry is open_record_authority with nothing
+    value state is registry.identities
+    value reader is build authority_reader with valid being yes
+    set state.clock_floor to reader.read_number with node being node, key being "clock_floor"
+    set state.next_grant_id to reader.read_number with node being node, key being "next_grant_id"
+    set state.retired_through to reader.read_number with node being node, key being "retired_through"
+    value row_keys as array of text is ["id", "entity", "session", "audience", "scope", "actions", "expires", "parent", "revoked",
+        "max_read_bytes", "max_write_bytes", "max_scan_keys", "max_list_keys", "max_list_metadata_bytes"]
+    repeat for index from 0 to count
+        value found is array_get with grants, index
+        when found.is_error with nothing then
+            give bad_authority with nothing
+        end when
+        value optional is found.unwrap with nothing
+        when optional.is_none with nothing then
+            give bad_authority with nothing
+        end when
+        value row is optional.unwrap with nothing
+        when not (exact_object with node being row, keys being row_keys) or
+            (reader.read_text with node being row, key being "audience") does not equal "enigma" then
+            give bad_authority with nothing
+        end when
+        append (reader.read_number with node being row, key being "id") to state.grant_ids
+        append (reader.read_text with node being row, key being "entity") to state.holder_entities
+        append (reader.read_number with node being row, key being "session") to state.holder_sessions
+        append (reader.read_text with node being row, key being "scope") to state.scopes
+        append (reader.read_number with node being row, key being "actions") to state.rights
+        append (reader.read_number with node being row, key being "expires") to state.expiries
+        append (reader.read_number with node being row, key being "parent") to state.parents
+        append (reader.read_boolean with node being row, key being "revoked") to state.revoked
+        append (reader.read_number with node being row, key being "max_read_bytes") to registry.read_bytes
+        append (reader.read_number with node being row, key being "max_write_bytes") to registry.write_bytes
+        append ((reader.read_number with node being row, key being "max_scan_keys") plus 1) to state.work_limits
+        append ((reader.read_number with node being row, key being "max_list_keys") plus 1) to state.result_limits
+        append (reader.read_number with node being row, key being "max_list_metadata_bytes") to registry.list_metadata_bytes
+    end repeat
+    set state.grant_count to count
+    when not reader.valid or not (valid_authority with registry being registry, scope being scope) then
+        give bad_authority with nothing
+    end when
+    give build record_authority_decode with code being "ok", registry being registry
+end paragraph
+
+note if_test_mode
+record_test_limits returns record_access_limits begin paragraph
+    give build record_access_limits with max_read_bytes being 4194304, max_write_bytes being 8192,
+        max_scan_keys being 2048, max_list_keys being 64, max_list_metadata_bytes being 32000
+end paragraph
+
+note if_test_mode
+record_test_context receives entity as text, session_id as number, tick as number returns access_context begin paragraph
+    give build access_context with entity being entity, session being session_id, audience being "enigma", tick being tick
+end paragraph
+
+note suite "enigma.records.authority"
+record_delegation_attenuates_every_budget_and_revokes_live_ancestry begin test
+    value registry is open_record_authority with nothing
+    value limits is record_test_limits with nothing
+    value root is registry.install with entity being "service", session_id being 1, scope being "records",
+        actions being 15, expires being 100, limits being limits, tick being 1
+    expect root.code equals "ok"
+    value caller is record_test_context with entity being "service", session_id being 1, tick being 2
+    value excessive is build record_access_limits with max_read_bytes being 4096, max_write_bytes being 8193,
+        max_scan_keys being 0, max_list_keys being 0, max_list_metadata_bytes being 0
+    expect (registry.delegate with caller being caller, parent_id being root.grant_id, entity being "worker",
+        session_id being 2, actions being 3, expires being 99, limits being excessive).code equals "denied"
+    expect registry.identities.next_grant_id equals 2
+    value restricted is build record_access_limits with max_read_bytes being 4096, max_write_bytes being 0,
+        max_scan_keys being 0, max_list_keys being 0, max_list_metadata_bytes being 0
+    value child is registry.delegate with caller being caller, parent_id being root.grant_id, entity being "worker",
+        session_id being 2, actions being 3, expires being 99, limits being restricted
+    expect child.code equals "ok"
+    expect child.grant_id equals 2
+    value holder is record_test_context with entity being "worker", session_id being 2, tick being 3
+    value permitted is registry.authorize with caller being holder, grant_id being child.grant_id, scope being "records", action being 2
+    expect permitted.code equals "ok"
+    expect permitted.limits.max_read_bytes equals 4096
+    expect permitted.limits.max_write_bytes equals 0
+    expect permitted.limits.max_scan_keys equals 0
+    expect permitted.limits.max_list_keys equals 0
+    expect permitted.limits.max_list_metadata_bytes equals 0
+    expect (registry.authorize with caller being holder, grant_id being child.grant_id, scope being "records", action being 4).code equals "denied"
+    expect (registry.authorize with caller being holder, grant_id being child.grant_id, scope being "other", action being 1).code equals "denied"
+    value wrong_session is record_test_context with entity being "worker", session_id being 3, tick being 4
+    expect (registry.authorize with caller being wrong_session, grant_id being child.grant_id, scope being "records", action being 1).code equals "denied"
+    expect registry.identities.clock_floor equals 4
+    expect (registry.authorize with caller being holder, grant_id being child.grant_id, scope being "records", action being 1).code equals "denied"
+    value revoker is record_test_context with entity being "service", session_id being 1, tick being 5
+    expect (registry.revoke with caller being revoker, grant_id being root.grant_id).code equals "ok"
+    value later is record_test_context with entity being "worker", session_id being 2, tick being 5
+    expect (registry.authorize with caller being later, grant_id being child.grant_id, scope being "records", action being 1).code equals "denied"
+end test
+
+note suite "enigma.records.authority"
+record_checkpoint_recovers_grants_only_to_retire_them begin test
+    value registry is open_record_authority with nothing
+    value limits is record_test_limits with nothing
+    value root is registry.install with entity being "service", session_id being 1, scope being "records",
+        actions being 15, expires being 100, limits being limits, tick being 10
+    value caller is record_test_context with entity being "service", session_id being 1, tick being 11
+    value child is registry.delegate with caller being caller, parent_id being root.grant_id, entity being "worker",
+        session_id being 2, actions being 1, expires being 99, limits being limits
+    expect child.code equals "ok"
+    value encoded is encode_record_authority with registry being registry, scope being "records"
+    expect not (encoded.is_error with nothing)
+    value node is encoded.unwrap with nothing
+    value decoded is decode_record_authority with node being node, scope being "records"
+    expect decoded.code equals "ok"
+    expect decoded.registry.identities.clock_floor equals 11
+    expect decoded.registry.identities.next_grant_id equals 3
+    value grants is field_value with node being node, key being "grants"
+    value original is ((array_get with grants, 1).unwrap with nothing).unwrap with nothing
+    value wider is (object_set with original, "max_write_bytes", (integer_value with "8193").unwrap with nothing).unwrap with nothing
+    value forged_grants is (array_set with grants, 1, wider).unwrap with nothing
+    value forged is (object_set with node, "grants", forged_grants).unwrap with nothing
+    expect (decode_record_authority with node being forged, scope being "records").code equals "corrupt"
+    expect (decode_record_authority with node being node, scope being "different").code equals "corrupt"
+    expect (decoded.registry.retire_and_reclaim with nothing) equals 2
+    expect decoded.registry.identities.retired_through equals 2
+    expect decoded.registry.identities.clock_floor equals 11
+    expect (decoded.registry.authorize with caller being caller, grant_id being root.grant_id, scope being "records", action being 1).code equals "denied"
+    expect (decoded.registry.install with entity being "service", session_id being 3, scope being "records",
+        actions being 1, expires being 100, limits being limits, tick being 10).code equals "invalid"
+    value fresh is decoded.registry.install with entity being "service", session_id being 3, scope being "records",
+        actions being 1, expires being 100, limits being limits, tick being 11
+    expect fresh.code equals "ok"
+    expect fresh.grant_id equals 3
+end test
+
+note suite "enigma.records.authority"
+record_authority_distinguishes_row_and_encoded_byte_capacity begin test
+    value registry is open_record_authority with nothing
+    value limits is record_test_limits with nothing
+    variable label as text is ""
+    repeat for index from 0 to 128
+        set label to label plus quote
+    end repeat
+    repeat for index from 0 to 256
+        value admitted is registry.install with entity being label, session_id being 1, scope being "records",
+            actions being 15, expires being 1000, limits being limits, tick being index
+        expect admitted.code equals "ok"
+    end repeat
+    value full is registry.install with entity being label, session_id being 1, scope being "records",
+        actions being 15, expires being 1000, limits being limits, tick being 256
+    expect full.code equals "capacity"
+    expect full.grant_id equals 0
+    expect registry.identities.clock_floor equals 256
+    expect registry.identities.next_grant_id equals 257
+    value encoded is encode_record_authority with registry being registry, scope being "records"
+    expect encoded.is_error with nothing
+    expect (encoded.unwrap_error with nothing) equals "capacity"
+end test

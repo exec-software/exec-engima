@@ -47,16 +47,16 @@ structured `limit` response when the required scan is too large.
 
 The implementation is Matrix, configured through NILData. The canonical surface
 is the typed evidence operation model. No text query parser, inference system,
-causal dependency model, network transport, or cryptography exists. Direct
+causal dependency model, or network transport exists. Direct
 `enigma.client` use remains volatile; durable receipts come through a POSIX
 storage host or the importable session defined in ENI-0007.
 
-## Proposed application-record profile
+## Application records
 
-[ENI-0009](ENI-0009-application-records.md) proposes exact large bodies,
-compare-and-set versions, complete key enumeration, byte authority, and staged
-application import. It is not implemented or qualified. Evidence limits and
-current durable APIs remain those described above.
+The separate record profile stores exact UTF-8 bodies up to 4 MiB, with
+compare-and-set versions, complete key enumeration, and separate byte authority.
+Its local durability contract is implemented. Goetic import and combined SDK
+qualification are separate work. [ENI-0009](ENI-0009-application-records.md)
 
 ## Authority direction
 
@@ -115,8 +115,8 @@ persistence guide](../persistence.md).
    historical explanations, and constrained agent activity. Compare usefulness,
    correctness, and cost with reproducible baselines.
 
-Package-manager distribution of the client is deferred. Storage layout,
-concurrency, indexes, transport encoding, cryptographic dependencies, and
+Package-manager distribution of the client is deferred. Broader storage layouts,
+concurrency, query indexes, transport encoding, encryption dependencies, and
 compatibility policy remain open. Choose those mechanisms to support useful,
 testable behavior; do not infer them from an architectural label.
 

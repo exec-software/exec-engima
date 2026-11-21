@@ -1,0 +1,122 @@
+book enigma.records.bytes
+
+read byte_at, from_byte from nil.std.text
+
+!!! Validate UTF-8 scalar encodings directly over the body bytes. NUL is a
+!!! valid scalar here. The first continuation bounds exclude overlong forms,
+!!! surrogates, and code points above U+10FFFF.
+public valid_utf8 receives content as array of override byte returns boolean begin paragraph
+    variable remaining as number is 0
+    variable lower as number is 128
+    variable upper as number is 191
+    repeat for each octet in content
+        value code is octet becomes number
+        when remaining is greater than 0 then
+            when code is less than lower or code is greater than upper then
+                give no
+            end when
+            set remaining to remaining minus 1
+            set lower to 128
+            set upper to 191
+        otherwise when code is greater than 127 then
+            when code is at least 194 and code is at most 223 then
+                set remaining to 1
+            otherwise when code is at least 224 and code is at most 239 then
+                set remaining to 2
+                when code equals 224 then set lower to 160 end when
+                when code equals 237 then set upper to 159 end when
+            otherwise when code is at least 240 and code is at most 244 then
+                set remaining to 3
+                when code equals 240 then set lower to 144 end when
+                when code equals 244 then set upper to 143 end when
+            otherwise
+                give no
+            end when
+        end when
+    end repeat
+    give remaining equals 0
+end paragraph
+
+public valid_key receives key as text returns boolean begin paragraph
+    value size is the length of key
+    when size is less than 1 or size is greater than 256 then
+        give no
+    end when
+    variable octets as array of override byte is []
+    repeat for index from 0 to size
+        value code is byte_at with s being key, index being index
+        when code is at most 0 then
+            give no
+        end when
+        append code becomes override byte to octets
+    end repeat
+    give valid_utf8 with content being octets
+end paragraph
+
+!!! Compare validated keys in unsigned UTF-8 byte order. An equal prefix
+!!! sorts before a longer key. There is no character folding or path parsing.
+public compare_keys receives left as text, right as text returns number begin paragraph
+    when left equals right then give 0 end when
+    value left_size is the length of left
+    value right_size is the length of right
+    variable common as number is left_size
+    when right_size is less than common then set common to right_size end when
+    repeat for index from 0 to common
+        value left_byte is byte_at with s being left, index being index
+        value right_byte is byte_at with s being right, index being index
+        when left_byte is less than right_byte then give minus 1 end when
+        when left_byte is greater than right_byte then give 1 end when
+    end repeat
+    when left_size is less than right_size then give minus 1 end when
+    give 1
+end paragraph
+
+note suite "enigma.records.bytes"
+utf8_accepts_scalar_boundaries_and_embedded_nul begin test
+    value empty as array of override byte is []
+    value content as array of override byte is [0, 65, 127, 194, 128, 223, 191, 224, 160, 128,
+        237, 159, 191, 238, 128, 128, 239, 191, 191, 240, 144, 128, 128, 244, 143, 191, 191, 0]
+    expect valid_utf8 with content being empty
+    expect valid_utf8 with content being content
+end test
+
+note suite "enigma.records.bytes"
+utf8_rejects_non_scalar_and_incomplete_encodings begin test
+    value stray as array of override byte is [128]
+    value overlong_two as array of override byte is [192, 128]
+    value overlong_three as array of override byte is [224, 159, 191]
+    value overlong_four as array of override byte is [240, 143, 191, 191]
+    value surrogate as array of override byte is [237, 160, 128]
+    value beyond_unicode as array of override byte is [244, 144, 128, 128]
+    value obsolete_lead as array of override byte is [248, 128, 128, 128, 128]
+    value truncated as array of override byte is [244, 143, 191]
+    value interrupted as array of override byte is [194, 0]
+    expect not (valid_utf8 with content being stray)
+    expect not (valid_utf8 with content being overlong_two)
+    expect not (valid_utf8 with content being overlong_three)
+    expect not (valid_utf8 with content being overlong_four)
+    expect not (valid_utf8 with content being surrogate)
+    expect not (valid_utf8 with content being beyond_unicode)
+    expect not (valid_utf8 with content being obsolete_lead)
+    expect not (valid_utf8 with content being truncated)
+    expect not (valid_utf8 with content being interrupted)
+end test
+
+note suite "enigma.records.bytes"
+keys_follow_exact_unsigned_byte_order begin test
+    expect valid_key with key being "../lib\\*"
+    expect valid_key with key being "é/Ω"
+    expect not (valid_key with key being "")
+    expect not (valid_key with key being (from_byte with code being 128))
+    variable at_limit as text is ""
+    repeat for index from 0 to 128
+        set at_limit to at_limit plus "é"
+    end repeat
+    expect valid_key with key being at_limit
+    expect not (valid_key with key being (at_limit plus "x"))
+    expect (compare_keys with left being "z", right being "é") equals minus 1
+    expect (compare_keys with left being "Ω", right being "é") equals 1
+    expect (compare_keys with left being "é", right being "é/x") equals minus 1
+    expect (compare_keys with left being "é", right being "é") equals 0
+    expect (compare_keys with left being "a", right being "A") equals 1
+end test

@@ -1,0 +1,48 @@
+book enigma.records.client
+
+read access_context from enigma.authority
+read record_access_limits, record_grant_receipt from enigma.records.authority
+read record_owner, record_reply, record_get_receipt, record_put_receipt, record_list_receipt from enigma.records.session
+
+public record_client begin class
+    field owner as record_owner
+    field instance as text
+    field grant_id as number
+
+    public get receives caller as access_context, key as text,
+        max_body_bytes as number returns enigma.records.session::record_reply of enigma.records.session::record_get_receipt begin paragraph
+        give my.owner.get with instance being my.instance, caller being caller, grant_id being my.grant_id, key being key, max_body_bytes being max_body_bytes
+    end paragraph
+
+    public put receives caller as access_context, key as text, content as array of override byte,
+        expected_version as number returns enigma.records.session::record_reply of enigma.records.session::record_put_receipt begin paragraph
+        give my.owner.put with instance being my.instance, caller being caller, grant_id being my.grant_id,
+            key being key, content being content, expected_version being expected_version
+    end paragraph
+
+    public list_keys receives caller as access_context, max_keys as number, max_metadata_bytes as number,
+        max_scan_keys as number returns enigma.records.session::record_reply of enigma.records.session::record_list_receipt begin paragraph
+        give my.owner.list_keys with instance being my.instance, caller being caller, grant_id being my.grant_id,
+            max_keys being max_keys, max_metadata_bytes being max_metadata_bytes, max_scan_keys being max_scan_keys
+    end paragraph
+
+    public revoke receives caller as access_context returns enigma.records.session::record_reply of enigma.records.authority::record_grant_receipt begin paragraph
+        give my.owner.revoke with instance being my.instance, caller being caller, grant_id being my.grant_id
+    end paragraph
+
+    public delegate receives caller as access_context, entity as text, session_id as number, actions as number, expires as number,
+        limits as record_access_limits returns enigma.records.session::record_reply of enigma.records.authority::record_grant_receipt begin paragraph
+        give my.owner.delegate with instance being my.instance, caller being caller, grant_id being my.grant_id,
+            entity being entity, session_id being session_id, actions being actions, expires being expires, limits being limits
+    end paragraph
+end class
+
+public connect_records receives owner as record_owner, grant_id as number returns record_client begin paragraph
+    give build record_client with owner being owner, instance being owner.incarnation, grant_id being grant_id
+end paragraph
+
+!!! Trusted host only. An application client cannot provision a grant.
+public provision_record_host receives owner as record_owner, entity as text, session_id as number, actions as number, expires as number,
+    limits as record_access_limits, tick as number returns enigma.records.session::record_reply of enigma.records.authority::record_grant_receipt begin paragraph
+    give owner.provision with entity being entity, session_id being session_id, actions being actions, expires being expires, limits being limits, tick being tick
+end paragraph

@@ -1,0 +1,634 @@
+book enigma.records.index
+
+read everything from nil.std.nildata
+read everything from nil.std.core.option
+read everything from nil.std.core.result
+read byte_at, from_byte from nil.std.text
+read sort_i32, sort_text from nil.std.core
+read valid_key, compare_keys from enigma.records.bytes
+
+public record_key_limit returns number begin paragraph
+    give 2048
+end paragraph
+
+public record_body_limit returns number begin paragraph
+    give 4194304
+end paragraph
+
+public record_live_bytes_limit returns number begin paragraph
+    give 1073741824
+end paragraph
+
+public record_index_bytes_limit returns number begin paragraph
+    give 393216
+end paragraph
+
+public record_list_bytes_limit returns number begin paragraph
+    give 524288
+end paragraph
+
+public record_sequence_limit returns number begin paragraph
+    give 2147483646
+end paragraph
+
+index_page_size returns number begin paragraph
+    give 32
+end paragraph
+
+public record_index_entry begin record
+    field key as text
+    field version as number
+    field byte_length as number
+    field body_id as text
+    field digest as text
+end record
+
+public record_key_entry begin record
+    field key as text
+    field version as number
+    field byte_length as number
+end record
+
+public record_key_batch begin class
+    field keys as array of text
+    field versions as array of number
+    field byte_lengths as array of number
+
+    public count returns number begin paragraph
+        give the length of my keys
+    end paragraph
+
+    public get receives index as number returns Option of record_key_entry begin paragraph
+        value count is my count with nothing
+        when index is less than 0 or index is at least count or count is greater than (record_key_limit with nothing) or
+            (the length of my versions) does not equal count or (the length of my byte_lengths) does not equal count then
+            give Option.None
+        end when
+        give Option.Some holding (build record_key_entry with key being my keys at index,
+            version being my versions at index, byte_length being my byte_lengths at index)
+    end paragraph
+end class
+
+public open_record_key_batch returns record_key_batch begin paragraph
+    give build record_key_batch with keys being [], versions being [], byte_lengths being []
+end paragraph
+
+public record_key_listing begin record
+    field code as text
+    field entries as record_key_batch
+    field complete as boolean
+end record
+
+blank_listing receives code as text returns record_key_listing begin paragraph
+    give build record_key_listing with code being code, entries being (open_record_key_batch with nothing), complete being no
+end paragraph
+
+public record_index begin class
+    field sequence as number
+    field live_bytes as number
+    field keys as array of text
+    field versions as array of number
+    field byte_lengths as array of number
+    field body_ids as array of text
+    field digests as array of text
+    !!! Cached, validated JSON string spellings and lengths for exact admission.
+    field encoded_keys as array of text
+    field metadata_bytes as number
+    field index_bytes as number
+
+    public count returns number begin paragraph
+        give the length of my keys
+    end paragraph
+
+    public lower_bound receives key as text returns number begin paragraph
+        variable left as number is 0
+        variable right as number is my count with nothing
+        repeat while left is less than right
+            value middle is left plus ((right minus left) over 2)
+            value comparison is compare_keys with left being my keys at middle, right being key
+            when comparison is less than 0 then
+                set left to middle plus 1
+            otherwise
+                set right to middle
+            end when
+        end repeat
+        give left
+    end paragraph
+
+    public find receives key as text returns number begin paragraph
+        value offset is my lower_bound with key being key
+        when offset is less than (my count with nothing) and (my keys at offset) equals key then
+            give offset
+        end when
+        give minus 1
+    end paragraph
+
+    public row receives index as number returns Option of record_index_entry begin paragraph
+        value count is my count with nothing
+        when index is less than 0 or index is at least count or count is greater than (record_key_limit with nothing) or
+            (the length of my versions) does not equal count or (the length of my byte_lengths) does not equal count or
+            (the length of my body_ids) does not equal count or (the length of my digests) does not equal count then
+            give Option.None
+        end when
+        give Option.Some holding (build record_index_entry with key being my keys at index, version being my versions at index,
+            byte_length being my byte_lengths at index, body_id being my body_ids at index, digest being my digests at index)
+    end paragraph
+
+    public list_keys receives max_keys as number, max_metadata_bytes as number, max_scan_keys as number returns record_key_listing begin paragraph
+        when max_keys is less than 0 or max_keys is greater than (record_key_limit with nothing) or
+            max_metadata_bytes is less than 0 or max_metadata_bytes is greater than (record_list_bytes_limit with nothing) or
+            max_scan_keys is less than 0 or max_scan_keys is greater than (record_key_limit with nothing) then
+            give blank_listing with code being "invalid"
+        end when
+        value count is my count with nothing
+        when count is greater than max_keys or count is greater than max_scan_keys or my metadata_bytes is greater than max_metadata_bytes then
+            give blank_listing with code being "limit"
+        end when
+        value entries is open_record_key_batch with nothing
+        repeat for offset from 0 to count
+            append (my keys at offset) to entries.keys
+            append (my versions at offset) to entries.versions
+            append (my byte_lengths at offset) to entries.byte_lengths
+        end repeat
+        give build record_key_listing with code being "ok", complete being yes, entries being entries
+    end paragraph
+end class
+
+public open_record_index returns record_index begin paragraph
+    give build record_index with sequence being 0, live_bytes being 0, keys being [], versions being [], byte_lengths being [],
+        body_ids being [], digests being [], encoded_keys being [], metadata_bytes being 2, index_bytes being 2
+end paragraph
+
+public record_index_change begin record
+    field code as text
+    field index as record_index
+    field version as number
+end record
+
+public record_index_decode begin record
+    field code as text
+    field index as record_index
+end record
+
+unchanged_put receives code as text returns record_index_change begin paragraph
+    give build record_index_change with code being code, index being (open_record_index with nothing), version being 0
+end paragraph
+
+invalid_index returns record_index_decode begin paragraph
+    give build record_index_decode with code being "corrupt", index being (open_record_index with nothing)
+end paragraph
+
+valid_hex receives value_text as text, width as number returns boolean begin paragraph
+    when (the length of value_text) does not equal width then
+        give no
+    end when
+    repeat for offset from 0 to width
+        value unit is byte_at with s being value_text, index being offset
+        when (unit is less than 48 or unit is greater than 57) and (unit is less than 97 or unit is greater than 102) then
+            give no
+        end when
+    end repeat
+    give yes
+end paragraph
+
+!!! Sum of array/commas added around the index rows, excluding row sizes.
+index_framing receives count as number returns number begin paragraph
+    when count equals 0 then
+        give 2
+    end when
+    value pages is (count plus (index_page_size with nothing) minus 1) over (index_page_size with nothing)
+    give 1 plus count plus (2 times pages)
+end paragraph
+
+!!! Exact compact JSON size of [key,version,byte_length].
+metadata_row_bytes receives key_json as text, version as number, byte_length as number returns number begin paragraph
+    value version_text is formatted "{version}"
+    value length_text is formatted "{byte_length}"
+    give 4 plus (the length of key_json) plus (the length of version_text) plus (the length of length_text)
+end paragraph
+
+copy_row receives target as record_index, source as record_index, offset as number returns nothing begin paragraph
+    append (source.keys at offset) to target.keys
+    append (source.versions at offset) to target.versions
+    append (source.byte_lengths at offset) to target.byte_lengths
+    append (source.body_ids at offset) to target.body_ids
+    append (source.digests at offset) to target.digests
+    append (source.encoded_keys at offset) to target.encoded_keys
+    give nothing
+end paragraph
+
+append_row receives index as record_index, key as text, key_json as text, version as number,
+    byte_length as number, body_id as text, digest as text returns nothing begin paragraph
+    append key to index.keys
+    append version to index.versions
+    append byte_length to index.byte_lengths
+    append body_id to index.body_ids
+    append digest to index.digests
+    append key_json to index.encoded_keys
+    give nothing
+end paragraph
+
+public stage_record_put receives index as record_index, key as text, byte_length as number,
+    body_id as text, digest as text, expected_version as number returns record_index_change begin paragraph
+    when not (valid_key with key being key) or expected_version is less than 0 or
+        expected_version is greater than (record_sequence_limit with nothing) or byte_length is less than 0 then
+        give unchanged_put with code being "invalid"
+    end when
+    when byte_length is greater than (record_body_limit with nothing) then
+        give unchanged_put with code being "capacity"
+    end when
+    value count is index.count with nothing
+    value offset is index.lower_bound with key being key
+    value exists is offset is less than count and (index.keys at offset) equals key
+    variable current_version as number is 0
+    variable old_length as number is 0
+    when exists then
+        set current_version to index.versions at offset
+        set old_length to index.byte_lengths at offset
+    end when
+    when expected_version does not equal current_version then
+        give unchanged_put with code being "conflict"
+    end when
+    value live_bytes is index.live_bytes minus old_length plus byte_length
+    when (not exists and count is at least (record_key_limit with nothing)) or
+        index.sequence is at least (record_sequence_limit with nothing) or live_bytes is greater than (record_live_bytes_limit with nothing) then
+        give unchanged_put with code being "capacity"
+    end when
+    when not (valid_hex with value_text being body_id, width being 32) or not (valid_hex with value_text being digest, width being 64) then
+        give unchanged_put with code being "corrupt"
+    end when
+    repeat for each existing_id in index.body_ids
+        when existing_id equals body_id then
+            give unchanged_put with code being "corrupt"
+        end when
+    end repeat
+    value encoded_key is string_value with key
+    when encoded_key.is_error with nothing then
+        give unchanged_put with code being "invalid"
+    end when
+    value key_json is (encoded_key.unwrap with nothing).encoded
+    value next_version is index.sequence plus 1
+    value new_row_bytes is metadata_row_bytes with key_json being key_json, version being next_version, byte_length being byte_length
+    variable metadata_bytes as number is index.metadata_bytes plus new_row_bytes
+    variable index_bytes as number is index.index_bytes plus new_row_bytes
+    when not exists and count is greater than 0 then
+        set metadata_bytes to metadata_bytes plus 1
+    end when
+    when exists then
+        value old_row_bytes is metadata_row_bytes with key_json being index.encoded_keys at offset, version being current_version, byte_length being old_length
+        set metadata_bytes to metadata_bytes minus old_row_bytes
+        set index_bytes to index_bytes minus old_row_bytes
+    otherwise
+        !!! Full index rows include two commas, four quotes, and 96 hex bytes.
+        set index_bytes to index_bytes plus 102 plus (index_framing with count being count plus 1) minus (index_framing with count being count)
+    end when
+    when index_bytes is greater than (record_index_bytes_limit with nothing) or metadata_bytes is greater than (record_list_bytes_limit with nothing) then
+        give unchanged_put with code being "capacity"
+    end when
+    value successor is open_record_index with nothing
+    set successor.sequence to next_version
+    set successor.live_bytes to live_bytes
+    set successor.metadata_bytes to metadata_bytes
+    set successor.index_bytes to index_bytes
+    repeat for position from 0 to offset
+        evaluate copy_row with target being successor, source being index, offset being position
+    end repeat
+    evaluate append_row with index being successor, key being key, key_json being key_json, version being next_version,
+        byte_length being byte_length, body_id being body_id, digest being digest
+    variable first_remaining as number is offset
+    when exists then
+        set first_remaining to offset plus 1
+    end when
+    repeat for position from first_remaining to count
+        evaluate copy_row with target being successor, source being index, offset being position
+    end repeat
+    give build record_index_change with code being "ok", index being successor, version being next_version
+end paragraph
+
+!!! Trusted index rows contain only pre-escaped NILData strings, checked
+!!! integers, checked hex identifiers, and fixed JSON delimiters. Splitting
+!!! into bounded pages avoids reparsing the entire index for each decoded row.
+public encode_record_index receives index as record_index returns Result of `Value`, text begin paragraph
+    value count is index.count with nothing
+    variable serialized as text is "["
+    variable page as text is ""
+    repeat for offset from 0 to count
+        value in_page is offset remainder (index_page_size with nothing)
+        when in_page equals 0 then
+            when offset is greater than 0 then
+                set serialized to serialized plus page plus "],"
+            end when
+            set page to "["
+        otherwise
+            set page to page plus ","
+        end when
+        value prefix is index.encoded_keys at offset
+        value version is index.versions at offset
+        value byte_length is index.byte_lengths at offset
+        value id is index.body_ids at offset
+        value digest is index.digests at offset
+        set page to page plus "[" plus prefix plus formatted ",{version},{byte_length}," plus quote plus id plus quote plus "," plus quote plus digest plus quote plus "]"
+    end repeat
+    when count is greater than 0 then
+        set serialized to serialized plus page plus "]"
+    end when
+    set serialized to serialized plus "]"
+    when (the length of serialized) does not equal index.index_bytes or (the length of serialized) is greater than (record_index_bytes_limit with nothing) then
+        give Result.Error holding "corrupt"
+    end when
+    give from_json with serialized
+end paragraph
+
+array_length receives node as `Value` returns number begin paragraph
+    value shape is kind with node
+    when shape.is_error with nothing or (shape.unwrap with nothing) does not equal "array" then
+        give minus 1
+    end when
+    value amount is size with node
+    when amount.is_error with nothing then
+        give minus 1
+    end when
+    give amount.unwrap with nothing
+end paragraph
+
+index_item receives node as `Value`, offset as number returns `Value` begin paragraph
+    value item is array_get with node, offset
+    when item.is_error with nothing or (item.unwrap with nothing).is_none with nothing then
+        give (null_value with nothing).unwrap with nothing
+    end when
+    give (item.unwrap with nothing).unwrap with nothing
+end paragraph
+
+index_text receives node as `Value`, offset as number returns text begin paragraph
+    value parsed is text_value with (index_item with node being node, offset being offset)
+    when parsed.is_error with nothing then
+        give ""
+    end when
+    give parsed.unwrap with nothing
+end paragraph
+
+index_number receives node as `Value`, offset as number returns number begin paragraph
+    value item is index_item with node being node, offset being offset
+    value shape is kind with item
+    when shape.is_error with nothing or (shape.unwrap with nothing) does not equal "integer" then
+        give minus 1
+    end when
+    value parsed is as_i64 with item
+    when parsed.is_error with nothing then
+        give minus 1
+    end when
+    value amount is parsed.unwrap with nothing
+    !!! Preserve exact encoded byte accounting when accepting a checkpoint.
+    when item.encoded does not equal formatted "{amount}" then
+        give minus 1
+    end when
+    give amount
+end paragraph
+
+public decode_record_index receives node as `Value`, sequence as number, live_bytes as number returns record_index_decode begin paragraph
+    when sequence is less than 0 or sequence is greater than (record_sequence_limit with nothing) or live_bytes is less than 0 or
+        live_bytes is greater than (record_live_bytes_limit with nothing) or (the length of node.encoded) is greater than (record_index_bytes_limit with nothing) then
+        give invalid_index with nothing
+    end when
+    value page_size is index_page_size with nothing
+    value pages is array_length with node being node
+    when pages is less than 0 or pages is greater than ((record_key_limit with nothing) over page_size) then
+        give invalid_index with nothing
+    end when
+    value index is open_record_index with nothing
+    value max_body is record_body_limit with nothing
+    variable count as number is 0
+    variable latest as number is 0
+    variable last_key as text is ""
+    variable index_rows_bytes as number is 0
+    variable versions as array of override integer is []
+    variable body_ids as array of text is []
+    repeat for page_offset from 0 to pages
+        value page is index_item with node being node, offset being page_offset
+        value rows is array_length with node being page
+        when rows is less than 1 or rows is greater than page_size or (page_offset is less than (pages minus 1) and rows does not equal page_size) then
+            give invalid_index with nothing
+        end when
+        repeat for offset from 0 to rows
+            value row is index_item with node being page, offset being offset
+            when (array_length with node being row) does not equal 5 then
+                give invalid_index with nothing
+            end when
+            value key is index_text with node being row, offset being 0
+            value version is index_number with node being row, offset being 1
+            value byte_length is index_number with node being row, offset being 2
+            value body_id is index_text with node being row, offset being 3
+            value digest is index_text with node being row, offset being 4
+            when not (valid_key with key being key) or version is less than 1 or version is greater than sequence or
+                byte_length is less than 0 or byte_length is greater than max_body or
+                not (valid_hex with value_text being body_id, width being 32) or not (valid_hex with value_text being digest, width being 64) then
+                give invalid_index with nothing
+            end when
+            when count is greater than 0 and (compare_keys with left being last_key, right being key) is at least 0 then
+                give invalid_index with nothing
+            end when
+            value key_node is index_item with node being row, offset being 0
+            value row_bytes is metadata_row_bytes with key_json being key_node.encoded, version being version, byte_length being byte_length
+            when count is greater than 0 then
+                set index.metadata_bytes to index.metadata_bytes plus 1
+            end when
+            set index.metadata_bytes to index.metadata_bytes plus row_bytes
+            set index_rows_bytes to index_rows_bytes plus row_bytes plus 102
+            set index.live_bytes to index.live_bytes plus byte_length
+            when index.live_bytes is greater than live_bytes then
+                give invalid_index with nothing
+            end when
+            when version is greater than latest then
+                set latest to version
+            end when
+            set last_key to key
+            append version becomes override integer to versions
+            append body_id to body_ids
+            evaluate append_row with index being index, key being key, key_json being key_node.encoded, version being version,
+                byte_length being byte_length, body_id being body_id, digest being digest
+            set count to count plus 1
+        end repeat
+    end repeat
+    set index.index_bytes to index_rows_bytes plus (index_framing with count being count)
+    when index.index_bytes does not equal (the length of node.encoded) or index.metadata_bytes is greater than (record_list_bytes_limit with nothing) or
+        index.live_bytes does not equal live_bytes or latest does not equal sequence then
+        give invalid_index with nothing
+    end when
+    !!! Sort independent copies, leaving index rows in unsigned key order.
+    value sorted_versions is sort_i32 with versions
+    value sorted_ids is sort_text with body_ids
+    repeat for offset from 1 to count
+        when (sorted_versions at offset) equals (sorted_versions at (offset minus 1)) or
+            (sorted_ids at offset) equals (sorted_ids at (offset minus 1)) then
+            give invalid_index with nothing
+        end when
+    end repeat
+    set index.sequence to sequence
+    give build record_index_decode with code being "ok", index being index
+end paragraph
+
+note if_test_mode
+test_digest returns text begin paragraph
+    give "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+end paragraph
+
+note if_test_mode
+test_body_id receives identifier as number returns text begin paragraph
+    give formatted "0123456789abcdef0123456789{identifier}"
+end paragraph
+
+note suite "enigma.records.index"
+cas_updates_issue_store_wide_versions_and_leave_prior_rows_unchanged begin test
+    value none is open_record_index with nothing
+    value digest is test_digest with nothing
+    value first is stage_record_put with index being none, key being "é", byte_length being 0,
+        body_id being (test_body_id with identifier being 100001), digest being digest, expected_version being 0
+    expect first.code equals "ok"
+    expect first.version equals 1
+    expect (none.count with nothing) equals 0
+    expect (first.index.find with key being "missing") equals minus 1
+    value second is stage_record_put with index being first.index, key being "dir\\*?/../", byte_length being 4,
+        body_id being (test_body_id with identifier being 100002), digest being digest, expected_version being 0
+    expect second.code equals "ok"
+    expect second.version equals 2
+    expect ((second.index.row with index being 1).unwrap with nothing).version equals 1
+    value exists is stage_record_put with index being second.index, key being "é", byte_length being 5,
+        body_id being (test_body_id with identifier being 100003), digest being digest, expected_version being 0
+    expect exists.code equals "conflict"
+    expect exists.version equals 0
+    value replacement is stage_record_put with index being second.index, key being "é", byte_length being 5,
+        body_id being (test_body_id with identifier being 100003), digest being digest, expected_version being 1
+    expect replacement.code equals "ok"
+    expect replacement.version equals 3
+    expect replacement.index.live_bytes equals 9
+    expect second.index.live_bytes equals 4
+    expect ((second.index.row with index being 1).unwrap with nothing).byte_length equals 0
+    expect ((replacement.index.row with index being 1).unwrap with nothing).byte_length equals 5
+    value content is encode_record_index with index being replacement.index
+    expect not (content.is_error with nothing)
+    value decoded is decode_record_index with node being (content.unwrap with nothing), sequence being 3, live_bytes being 9
+    expect decoded.code equals "ok"
+    expect ((decoded.index.row with index being 0).unwrap with nothing).key equals "dir\\*?/../"
+    expect ((decoded.index.row with index being 1).unwrap with nothing).version equals 3
+end test
+
+note suite "enigma.records.index"
+enumeration_requires_complete_key_scan_and_exact_encoded_metadata_budget begin test
+    value none is open_record_index with nothing
+    value key is quote plus newline plus "é"
+    value first is stage_record_put with index being none, key being key, byte_length being 0,
+        body_id being (test_body_id with identifier being 100001), digest being (test_digest with nothing), expected_version being 0
+    expect first.code equals "ok"
+    value escaped is (string_value with key).unwrap with nothing
+    value measured is (from_json with ("[[" plus escaped.encoded plus ",1,0]]")).unwrap with nothing
+    value exact is the length of measured.encoded
+    expect first.index.metadata_bytes equals exact
+    value byte_limited is first.index.list_keys with max_keys being 1, max_metadata_bytes being exact minus 1, max_scan_keys being 1
+    expect byte_limited.code equals "limit"
+    expect not byte_limited.complete
+    expect (byte_limited.entries.count with nothing) equals 0
+    value no_scan is first.index.list_keys with max_keys being 1, max_metadata_bytes being exact, max_scan_keys being 0
+    expect no_scan.code equals "limit"
+    value no_keys is first.index.list_keys with max_keys being 0, max_metadata_bytes being exact, max_scan_keys being 1
+    expect no_keys.code equals "limit"
+    value listed is first.index.list_keys with max_keys being 1, max_metadata_bytes being exact, max_scan_keys being 1
+    expect listed.code equals "ok"
+    expect listed.complete
+    expect ((listed.entries.get with index being 0).unwrap with nothing).key equals key
+    expect (listed.entries.get with index being 1).is_none with nothing
+end test
+
+note if_test_mode
+index_fixture receives count as number, prefix as text returns record_index begin paragraph
+    value index is open_record_index with nothing
+    value digest is test_digest with nothing
+    variable index_rows_bytes as number is 0
+    repeat for offset from 0 to count
+        value key_number is 100000 plus offset
+        value key is prefix plus formatted "key-{key_number}"
+        value key_json is (string_value with key).unwrap with nothing
+        value metadata is metadata_row_bytes with key_json being key_json.encoded, version being offset plus 1, byte_length being 0
+        evaluate append_row with index being index, key being key, key_json being key_json.encoded, version being offset plus 1,
+            byte_length being 0, body_id being (test_body_id with identifier being key_number), digest being digest
+        set index.metadata_bytes to index.metadata_bytes plus metadata
+        set index_rows_bytes to index_rows_bytes plus metadata plus 102
+    end repeat
+    set index.sequence to count
+    set index.metadata_bytes to index.metadata_bytes plus count minus 1
+    set index.index_bytes to index_rows_bytes plus (index_framing with count being count)
+    give index
+end paragraph
+
+note suite "enigma.records.index"
+full_short_key_index_round_trips_enumerates_and_reserves_create_capacity begin test
+    value index is index_fixture with count being 2048, prefix being ""
+    value encoded is encode_record_index with index being index
+    expect not (encoded.is_error with nothing)
+    value decoded is decode_record_index with node being (encoded.unwrap with nothing), sequence being 2048, live_bytes being 0
+    expect decoded.code equals "ok"
+    expect (decoded.index.count with nothing) equals 2048
+    expect (decoded.index.find with key being "key-100000") equals 0
+    expect (decoded.index.find with key being "key-102047") equals 2047
+    value listing is decoded.index.list_keys with max_keys being 2048, max_metadata_bytes being 524288, max_scan_keys being 2048
+    expect listing.code equals "ok"
+    expect listing.complete
+    expect (listing.entries.count with nothing) equals 2048
+    expect ((listing.entries.get with index being 2047).unwrap with nothing).version equals 2048
+    value full is stage_record_put with index being decoded.index, key being "z", byte_length being 1,
+        body_id being (test_body_id with identifier being 102048), digest being (test_digest with nothing), expected_version being 0
+    expect full.code equals "capacity"
+    value replaced is stage_record_put with index being decoded.index, key being "key-102047", byte_length being 1,
+        body_id being (test_body_id with identifier being 102048), digest being (test_digest with nothing), expected_version being 2048
+    expect replaced.code equals "ok"
+    expect replaced.version equals 2049
+    expect (replaced.index.count with nothing) equals 2048
+end test
+
+note suite "enigma.records.index"
+escaped_keys_reach_the_index_byte_ceiling_before_the_key_ceiling begin test
+    variable prefix as text is ""
+    value slash is from_byte with code being 92
+    repeat for offset from 0 to 245
+        set prefix to prefix plus slash
+    end repeat
+    !!! Long escaped keys fill this independently encoded index at 641 rows.
+    value index is index_fixture with count being 640, prefix being prefix
+    value accepted is stage_record_put with index being index, key being (prefix plus "key-100640"), byte_length being 0,
+        body_id being (test_body_id with identifier being 100640), digest being (test_digest with nothing), expected_version being 0
+    expect accepted.code equals "ok"
+    value encoded is encode_record_index with index being accepted.index
+    expect not (encoded.is_error with nothing)
+    value content is encoded.unwrap with nothing
+    expect (the length of content.encoded) is at most 393216
+    value refused is stage_record_put with index being accepted.index, key being (prefix plus "key-100641"), byte_length being 0,
+        body_id being (test_body_id with identifier being 100641), digest being (test_digest with nothing), expected_version being 0
+    expect refused.code equals "capacity"
+    expect refused.version equals 0
+    expect accepted.index.sequence equals 641
+    expect (accepted.index.count with nothing) equals 641
+    expect (accepted.index.find with key being (prefix plus "key-100641")) equals minus 1
+end test
+
+note suite "enigma.records.index"
+decoder_refuses_duplicate_body_ids_versions_and_counter_or_size_disagreement begin test
+    value none is open_record_index with nothing
+    value digest is test_digest with nothing
+    value first is stage_record_put with index being none, key being "x", byte_length being 2,
+        body_id being (test_body_id with identifier being 100001), digest being digest, expected_version being 0
+    value second is stage_record_put with index being first.index, key being "y", byte_length being 3,
+        body_id being (test_body_id with identifier being 100002), digest being digest, expected_version being 0
+    value normal is (encode_record_index with index being second.index).unwrap with nothing
+    expect (decode_record_index with node being normal, sequence being 3, live_bytes being 5).code equals "corrupt"
+    expect (decode_record_index with node being normal, sequence being 2, live_bytes being 6).code equals "corrupt"
+    set second.index.body_ids at 1 to second.index.body_ids at 0
+    value duplicate_body is (encode_record_index with index being second.index).unwrap with nothing
+    expect (decode_record_index with node being duplicate_body, sequence being 2, live_bytes being 5).code equals "corrupt"
+    set second.index.body_ids at 1 to test_body_id with identifier being 100002
+    set second.index.versions at 0 to 2
+    value duplicate_version is (encode_record_index with index being second.index).unwrap with nothing
+    expect (decode_record_index with node being duplicate_version, sequence being 2, live_bytes being 5).code equals "corrupt"
+    set second.index.versions at 0 to 1
+    set second.index.encoded_keys at 1 to quote plus "w" plus quote
+    value disordered is (encode_record_index with index being second.index).unwrap with nothing
+    expect (decode_record_index with node being disordered, sequence being 2, live_bytes being 5).code equals "corrupt"
+end test

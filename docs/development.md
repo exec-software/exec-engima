@@ -85,6 +85,15 @@ fixtures and requires the lock-ownership API in the pinned SDK.
 reply limits, maintenance capacity, and confirmed byte-capacity refusals through
 the persistence hosts. It keeps the existing worker and process timeouts.
 
+## Application record checks
+
+Run `./scripts/test-records.sh` with the same complete development SDK. The
+runner checks strict UTF-8 bodies, independent byte and count permissions,
+version preconditions, complete enumeration, and the manifest codec. An
+external process checks raw files and digests, restart retirement, and the
+effects of failures before and during manifest publication. Select
+`--target vm` or `--target native` to check one route.
+
 ## Durable host
 
 The installed SDK's atomic file publication lacks a parent-directory sync

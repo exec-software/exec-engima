@@ -1,0 +1,197 @@
+book enigma.durable_io
+
+read write_bytes_durable, read_regular_bytes, is_private_regular_file, sha256_hex from nil.std.io
+read byte_at, from_byte, char_at, contains, substring from nil.std.text
+read get_current_directory from nil.std.system
+read envelope_text, build_envelope, read_envelope, confirm_envelope, envelope_limit from enigma.persistence
+
+!!! Exactly 32 lowercase hexadecimal characters, matching the identifiers the
+!!! Python host produced with secrets.token_hex(16).
+public hex_id_ok receives candidate as text returns boolean begin paragraph
+    when (the length of candidate) does not equal 32 then
+        give no
+    end when
+    repeat for index from 0 to 32
+        value character is char_at with s being candidate, index being index
+        when not (contains with s being "0123456789abcdef", needle being character) then
+            give no
+        end when
+    end repeat
+    give yes
+end paragraph
+
+public bytes_of receives content as text returns array of override byte begin paragraph
+    variable octets as array of override byte is []
+    value size is the length of content
+    variable offset as number is 0
+    repeat while offset is less than size
+        variable width as number is 1024
+        when size minus offset is less than width then
+            set width to size minus offset
+        end when
+        !!! Byte access may measure or copy its text argument. Keep that
+        !!! argument bounded rather than passing the full checkpoint per byte.
+        value block is substring with s being content, start being offset, length being width
+        repeat for index from 0 to width
+            append (byte_at with s being block, index being index) becomes override byte to octets
+        end repeat
+        set offset to offset plus width
+    end repeat
+    give octets
+end paragraph
+
+public text_of receives octets as array of override byte returns text begin paragraph
+    !!! Keep per-byte copies bounded, then join complete chunks pairwise.
+    !!! Growing one prefix for an entire checkpoint copied its whole history
+    !!! for every byte. Text here remains raw bytes, including UTF-8 sequences
+    !!! split across a chunk boundary; no decoding or normalization occurs.
+    variable chunks as array of text is []
+    variable chunk as text is ""
+    variable held as number is 0
+    repeat for each octet in octets
+        set chunk to chunk plus (from_byte with code being octet becomes number)
+        set held to held plus 1
+        when held equals 1024 then
+            append chunk to chunks
+            set chunk to ""
+            set held to 0
+        end when
+    end repeat
+    when held is greater than 0 then
+        append chunk to chunks
+    end when
+    when (the length of chunks) equals 0 then
+        give ""
+    end when
+    repeat while (the length of chunks) is greater than 1
+        variable merged as array of text is []
+        variable index as number is 0
+        repeat while index is less than (the length of chunks)
+            when index plus 1 is less than (the length of chunks) then
+                append ((chunks at index) plus (chunks at (index plus 1))) to merged
+            otherwise
+                append (chunks at index) to merged
+            end when
+            set index to index plus 2
+        end repeat
+        set chunks to merged
+    end repeat
+    give chunks at 0
+end paragraph
+
+public trim_trailing_slashes receives path as text returns text begin paragraph
+    variable amount as number is the length of path
+    repeat while amount is greater than 1
+        when (byte_at with s being path, index being amount minus 1) does not equal 47 then
+            stop repeating
+        end when
+        set amount to amount minus 1
+    end repeat
+    give substring with s being path, start being 0, length being amount
+end paragraph
+
+public pin_directory receives path as text returns text begin paragraph
+    when (the length of path) equals 0 then
+        give ""
+    end when
+    !!! POSIX filesystem APIs preserve literal backslashes. Portable path
+    !!! helpers fold them into separators, so construct only with raw '/'.
+    when (byte_at with s being path, index being 0) equals 47 then
+        give trim_trailing_slashes with path being path
+    end when
+    value current is get_current_directory with nothing
+    when (the length of current) equals 0 then
+        give ""
+    end when
+    variable prefix as text is current plus "/"
+    when current equals "/" then
+        set prefix to "/"
+    end when
+    !!! Removing terminal separators keeps a named final component for the
+    !!! no-follow directory check; a symlink never inherits its target's mode.
+    give trim_trailing_slashes with path being prefix plus path
+end paragraph
+
+public parent_directory receives path as text returns text begin paragraph
+    value selected is trim_trailing_slashes with path being path
+    variable position as number is (the length of selected) minus 1
+    repeat while position is at least 0
+        when (byte_at with s being selected, index being position) equals 47 then
+            when position equals 0 then
+                give "/"
+            end when
+            give substring with s being selected, start being 0, length being position
+        end when
+        set position to position minus 1
+    end repeat
+    give "."
+end paragraph
+
+public prepare_payload receives payload as text returns envelope_text begin paragraph
+    value digest is sha256_hex with data being (bytes_of with content being payload)
+    when digest.is_error with nothing then
+        give build envelope_text with code being "storage_error", content being ""
+    end when
+    give build_envelope with payload being payload, digest being (digest.unwrap with nothing)
+end paragraph
+
+public publish_payload receives path as text, prepared as envelope_text, replace as boolean returns text begin paragraph
+    when prepared.code does not equal "ok" then
+        give "storage_error"
+    end when
+    value written is write_bytes_durable with path being path,
+        content being (bytes_of with content being prepared.content), replace being replace
+    when written.is_error with nothing or not (written.unwrap with nothing) then
+        give "storage_error"
+    end when
+    when not replace then
+        !!! No-clobber publication may link a staged inode. A leftover
+        !!! staging link makes the destination ineligible for recovery.
+        value private is is_private_regular_file with path being path
+        when private.is_error with nothing or not (private.unwrap with nothing) then
+            give "storage_error"
+        end when
+    end when
+    give "ok"
+end paragraph
+
+public checked_payload begin record
+    field ok as boolean
+    field payload as text
+end record
+
+!!! Final component checks and no-follow reads assume trusted directory ancestry.
+!!! The profile-specific decoder still needs to validate the complete payload.
+public load_payload receives path as text returns checked_payload begin paragraph
+    value failed is build checked_payload with ok being no, payload being ""
+    value private is is_private_regular_file with path being path
+    when private.is_error with nothing or not (private.unwrap with nothing) then
+        give failed
+    end when
+    value raw is read_regular_bytes with path being path, maximum_bytes being (envelope_limit with nothing)
+    when raw.is_error with nothing then
+        give failed
+    end when
+    value octets is raw.unwrap with nothing
+    !!! Canonical JSON cannot contain raw NUL. The native text path cannot
+    !!! represent that byte, so refuse it before conversion.
+    repeat for each octet in octets
+        when (octet becomes number) equals 0 then give failed end when
+    end repeat
+    value content is text_of with octets being octets
+    when (the length of content) does not equal (the length of octets) then
+        give failed
+    end when
+    value decoded is read_envelope with content being content
+    when decoded.code does not equal "ok" then
+        give failed
+    end when
+    value digest is sha256_hex with data being (bytes_of with content being decoded.payload)
+    when digest.is_error with nothing then
+        give failed
+    end when
+    when (confirm_envelope with decoded being decoded, computed being (digest.unwrap with nothing)) does not equal "ok" then
+        give failed
+    end when
+    give build checked_payload with ok being yes, payload being decoded.payload
+end paragraph

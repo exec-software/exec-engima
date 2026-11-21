@@ -1,0 +1,608 @@
+book enigma.records.session
+
+read create_private_directory, is_private_directory, is_private_regular_file, acquire_file_lock,
+    release_file_lock, file_lock_is_held, sync_directory, read_regular_bytes, write_bytes_durable, sha256_hex from nil.std.io
+read random_hex from nil.std.security
+read access_context from enigma.authority
+read everything from nil.std.core.result
+read everything from nil.std.core.option
+read envelope_text from enigma.persistence
+read pin_directory, parent_directory, prepare_payload, publish_payload, load_payload from enigma.durable_io
+read valid_utf8, valid_key from enigma.records.bytes
+read record_manifest, manifest_load, new_record_manifest, valid_record_scope, encode_record_manifest, decode_record_manifest from enigma.records.manifest
+read record_index_entry, record_key_batch, open_record_key_batch, stage_record_put,
+    record_key_limit, record_body_limit, record_live_bytes_limit, record_index_bytes_limit,
+    record_list_bytes_limit, record_sequence_limit from enigma.records.index
+read record_access_limits, record_grant_receipt from enigma.records.authority
+
+public record_limits begin record
+    field max_keys as number
+    field max_key_bytes as number
+    field max_body_bytes as number
+    field max_live_bytes as number
+    field max_index_bytes as number
+    field max_grants as number
+    field max_grant_bytes as number
+    field max_manifest_bytes as number
+    field max_envelope_bytes as number
+    field max_list_metadata_bytes as number
+end record
+
+public record_state_view begin record
+    field code as text
+    field database_id as text
+    field scope as text
+    field incarnation as text
+    field generation as number
+    field clock_floor as number
+end record
+
+public record_failure begin record
+    field code as text
+    field outcome_unknown as boolean
+end record
+
+public record_reply of type T begin record
+    field confirmed as boolean
+    field receipt as T
+    field failure as record_failure
+end record
+
+public record_get_receipt begin record
+    field code as text
+    field found as boolean
+    field content as array of override byte
+    field version as number
+    field byte_length as number
+end record
+
+public record_put_receipt begin record
+    field code as text
+    field version as number
+    field byte_length as number
+end record
+
+public record_list_receipt begin record
+    field code as text
+    field complete as boolean
+    field entries as record_key_batch
+    field generation as number
+end record
+
+record_effect begin record
+    field code as text
+    field confirmed as boolean
+    field outcome_unknown as boolean
+end record
+
+failed_effect receives code as text, uncertain as boolean returns record_effect begin paragraph
+    give build record_effect with code being code, confirmed being no, outcome_unknown being uncertain
+end paragraph
+
+confirmed_effect receives code as text returns record_effect begin paragraph
+    give build record_effect with code being code, confirmed being yes, outcome_unknown being no
+end paragraph
+
+failure_of receives effect as record_effect returns record_failure begin paragraph
+    when effect.confirmed then
+        give build record_failure with code being "", outcome_unknown being no
+    end when
+    give build record_failure with code being effect.code, outcome_unknown being effect.outcome_unknown
+end paragraph
+
+get_reply receives effect as record_effect, found as boolean, content as array of override byte,
+    version as number returns record_reply of enigma.records.session::record_get_receipt begin paragraph
+    value receipt is build record_get_receipt with code being effect.code, found being found,
+        content being content, version being version, byte_length being (the length of content)
+    give build record_reply of enigma.records.session::record_get_receipt with confirmed being effect.confirmed,
+        receipt being receipt, failure being (failure_of with effect being effect)
+end paragraph
+
+empty_get receives effect as record_effect returns record_reply of enigma.records.session::record_get_receipt begin paragraph
+    value empty as array of override byte is []
+    give get_reply with effect being effect, found being no, content being empty, version being 0
+end paragraph
+
+put_reply receives effect as record_effect, version as number, byte_length as number returns record_reply of enigma.records.session::record_put_receipt begin paragraph
+    value receipt is build record_put_receipt with code being effect.code, version being version, byte_length being byte_length
+    when effect.code does not equal "ok" then
+        set receipt.version to 0
+        set receipt.byte_length to 0
+    end when
+    give build record_reply of enigma.records.session::record_put_receipt with confirmed being effect.confirmed,
+        receipt being receipt, failure being (failure_of with effect being effect)
+end paragraph
+
+list_reply receives effect as record_effect, entries as record_key_batch, generation as number returns record_reply of enigma.records.session::record_list_receipt begin paragraph
+    value receipt is build record_list_receipt with code being effect.code, complete being yes, entries being entries, generation being generation
+    when effect.code does not equal "ok" then
+        set receipt.complete to no
+        set receipt.entries to open_record_key_batch with nothing
+        set receipt.generation to 0
+    end when
+    give build record_reply of enigma.records.session::record_list_receipt with confirmed being effect.confirmed,
+        receipt being receipt, failure being (failure_of with effect being effect)
+end paragraph
+
+grant_reply receives effect as record_effect, grant_id as number returns record_reply of enigma.records.authority::record_grant_receipt begin paragraph
+    value receipt is build record_grant_receipt with code being effect.code, grant_id being 0
+    when effect.code equals "ok" then
+        set receipt.grant_id to grant_id
+    end when
+    give build record_reply of enigma.records.authority::record_grant_receipt with confirmed being effect.confirmed,
+        receipt being receipt, failure being (failure_of with effect being effect)
+end paragraph
+
+manifest_path receives directory as text returns text begin paragraph
+    give directory plus "/manifest.json"
+end paragraph
+
+objects_path receives directory as text returns text begin paragraph
+    give directory plus "/objects"
+end paragraph
+
+body_path receives directory as text, body_id as text returns text begin paragraph
+    give (objects_path with directory being directory) plus "/" plus body_id
+end paragraph
+
+body_read begin record
+    field ok as boolean
+    field content as array of override byte
+end record
+
+read_body receives directory as text, entry as record_index_entry returns body_read begin paragraph
+    value empty as array of override byte is []
+    value failed is build body_read with ok being no, content being empty
+    value directory_checked is is_private_directory with path being (objects_path with directory being directory)
+    when directory_checked.is_error with nothing or not (directory_checked.unwrap with nothing) then
+        give failed
+    end when
+    value path is body_path with directory being directory, body_id being entry.body_id
+    value inspected is is_private_regular_file with path being path
+    when inspected.is_error with nothing or not (inspected.unwrap with nothing) then
+        give failed
+    end when
+    !!! The exact size also bounds the read. NIL requires a positive read bound.
+    variable bound as number is entry.byte_length
+    when bound equals 0 then set bound to 1 end when
+    value loaded is read_regular_bytes with path being path, maximum_bytes being bound
+    when loaded.is_error with nothing then give failed end when
+    value content is loaded.unwrap with nothing
+    when (the length of content) does not equal entry.byte_length then give failed end when
+    value digest is sha256_hex with data being content
+    when digest.is_error with nothing or (digest.unwrap with nothing) does not equal entry.digest then
+        give failed
+    end when
+    when not (valid_utf8 with content being content) then give failed end when
+    give build body_read with ok being yes, content being content
+end paragraph
+
+candidate_manifest begin record
+    field code as text
+    field payload as text
+    field envelope as envelope_text
+end record
+
+prepare_manifest receives state as record_manifest returns candidate_manifest begin paragraph
+    value blank as envelope_text is build envelope_text with code being "", content being ""
+    value encoded is encode_record_manifest with state being state
+    when encoded.is_error with nothing then
+        give build candidate_manifest with code being (encoded.unwrap_error with nothing), payload being "", envelope being blank
+    end when
+    value payload is encoded.unwrap with nothing
+    value prepared is prepare_payload with payload being payload
+    when prepared.code does not equal "ok" then
+        give build candidate_manifest with code being "storage_error", payload being "", envelope being blank
+    end when
+    give build candidate_manifest with code being "ok", payload being payload, envelope being prepared
+end paragraph
+
+!!! One owner per execution context. Its public fields are trusted host memory.
+public record_owner begin class
+    field directory as text
+    field database_id as text
+    field scope as text
+    field incarnation as text
+    field generation as number
+    field clock_floor as number
+    field payload as text
+    field lock_token as number
+    field active as boolean
+    field poisoned as boolean
+    field outcome_unknown as boolean
+
+    poison receives code as text, uncertain as boolean returns record_effect begin paragraph
+        set my active to no
+        set my poisoned to yes
+        set my outcome_unknown to my outcome_unknown or uncertain
+        set my payload to ""
+        give failed_effect with code being code, uncertain being my.outcome_unknown
+    end paragraph
+
+    check_lock returns text begin paragraph
+        when my poisoned then give "poisoned" end when
+        when not my active then give "closed" end when
+        value held is file_lock_is_held with token being my.lock_token
+        when held.is_error with nothing then
+            give (my poison with code being "lock_error", uncertain being no).code
+        end when
+        when not (held.unwrap with nothing) then
+            give (my poison with code being "lock_lost", uncertain being no).code
+        end when
+        give "ok"
+    end paragraph
+
+    public describe_limits returns record_limits begin paragraph
+        give build record_limits with max_keys being (record_key_limit with nothing), max_key_bytes being 256,
+            max_body_bytes being (record_body_limit with nothing), max_live_bytes being (record_live_bytes_limit with nothing),
+            max_index_bytes being (record_index_bytes_limit with nothing), max_grants being 256, max_grant_bytes being 65536,
+            max_manifest_bytes being 524288, max_envelope_bytes being 1048576, max_list_metadata_bytes being (record_list_bytes_limit with nothing)
+    end paragraph
+
+    public describe_state returns record_state_view begin paragraph
+        value checked is my check_lock with nothing
+        when checked does not equal "ok" then
+            give build record_state_view with code being checked, database_id being "", scope being "",
+                incarnation being "", generation being 0, clock_floor being 0
+        end when
+        give build record_state_view with code being "ok", database_id being my.database_id, scope being my.scope,
+            incarnation being my.incarnation, generation being my.generation, clock_floor being my.clock_floor
+    end paragraph
+
+    public close returns text begin paragraph
+        set my active to no
+        set my payload to ""
+        value token is my.lock_token
+        set my lock_token to 0
+        when token is at most 0 then give "closed" end when
+        value held is file_lock_is_held with token being token
+        when held.is_error with nothing or not (held.unwrap with nothing) then give "lock_error" end when
+        value released is release_file_lock with token being token
+        when released.is_error with nothing or not (released.unwrap with nothing) then give "lock_error" end when
+        give "closed"
+    end paragraph
+
+    checkout receives instance as text returns manifest_load begin paragraph
+        variable code as text is my check_lock with nothing
+        when code equals "ok" and instance does not equal my.incarnation then set code to "stale_session" end when
+        when code equals "ok" and my.generation is at least 2147483646 then set code to "exhausted" end when
+        when code does not equal "ok" then
+            give build manifest_load with code being code,
+                state being (new_record_manifest with database_id being "", incarnation being "", scope being "")
+        end when
+        value loaded is decode_record_manifest with payload being my.payload
+        when loaded.code does not equal "ok" then
+            evaluate my poison with code being "corrupt", uncertain being no
+        end when
+        give loaded
+    end paragraph
+
+    adopt receives state as record_manifest, payload as text returns nothing begin paragraph
+        set my database_id to state.database_id
+        set my scope to state.scope
+        set my incarnation to state.incarnation
+        set my generation to state.generation
+        set my clock_floor to state.authority.identities.clock_floor
+        set my payload to payload
+        give nothing
+    end paragraph
+
+    publish receives state as record_manifest, candidate as candidate_manifest, code as text returns record_effect begin paragraph
+        when (publish_payload with path being (manifest_path with directory being my.directory),
+            prepared being candidate.envelope, replace being yes) does not equal "ok" then
+            give my poison with code being "storage_error", uncertain being yes
+        end when
+        evaluate my adopt with state being state, payload being candidate.payload
+        give confirmed_effect with code being code
+    end paragraph
+
+    finish receives state as record_manifest, code as text returns record_effect begin paragraph
+        !!! Successful mutations use their own publication path. Reads and
+        !!! refusals publish only when they advance the observed clock floor.
+        when state.authority.identities.clock_floor equals my.clock_floor then
+            give confirmed_effect with code being code
+        end when
+        set state.generation to my.generation plus 1
+        value candidate is prepare_manifest with state being state
+        when candidate.code does not equal "ok" then
+            give my poison with code being "storage_error", uncertain being no
+        end when
+        give my publish with state being state, candidate being candidate, code being code
+    end paragraph
+
+    finish_grant receives state as record_manifest, grant as record_grant_receipt returns record_reply of enigma.records.authority::record_grant_receipt begin paragraph
+        when grant.code does not equal "ok" then
+            give grant_reply with effect being (my finish with state being state, code being grant.code), grant_id being 0
+        end when
+        set state.generation to my.generation plus 1
+        value candidate is prepare_manifest with state being state
+        when candidate.code equals "capacity" then
+            value previous is decode_record_manifest with payload being my.payload
+            when previous.code does not equal "ok" then
+                give grant_reply with effect being (my poison with code being "corrupt", uncertain being no), grant_id being 0
+            end when
+            set previous.state.authority.identities.clock_floor to state.authority.identities.clock_floor
+            give grant_reply with effect being (my finish with state being previous.state, code being "capacity"), grant_id being 0
+        end when
+        when candidate.code does not equal "ok" then
+            give grant_reply with effect being (my poison with code being "storage_error", uncertain being no), grant_id being 0
+        end when
+        give grant_reply with effect being (my publish with state being state, candidate being candidate, code being "ok"),
+            grant_id being grant.grant_id
+    end paragraph
+
+    public provision receives entity as text, session_id as number, actions as number, expires as number,
+        limits as record_access_limits, tick as number returns record_reply of enigma.records.authority::record_grant_receipt begin paragraph
+        value staged is my checkout with instance being my.incarnation
+        when staged.code does not equal "ok" then
+            give grant_reply with effect being (failed_effect with code being staged.code, uncertain being my.outcome_unknown), grant_id being 0
+        end when
+        value issued is staged.state.authority.install with entity being entity, session_id being session_id, scope being my.scope,
+            actions being actions, expires being expires, limits being limits, tick being tick
+        give my finish_grant with state being staged.state, grant being issued
+    end paragraph
+
+    public delegate receives instance as text, caller as access_context, grant_id as number, entity as text, session_id as number,
+        actions as number, expires as number, limits as record_access_limits returns record_reply of enigma.records.authority::record_grant_receipt begin paragraph
+        value staged is my checkout with instance being instance
+        when staged.code does not equal "ok" then
+            give grant_reply with effect being (failed_effect with code being staged.code, uncertain being my.outcome_unknown), grant_id being 0
+        end when
+        value issued is staged.state.authority.delegate with caller being caller, parent_id being grant_id,
+            entity being entity, session_id being session_id, actions being actions, expires being expires, limits being limits
+        give my finish_grant with state being staged.state, grant being issued
+    end paragraph
+
+    public revoke receives instance as text, caller as access_context, grant_id as number returns record_reply of enigma.records.authority::record_grant_receipt begin paragraph
+        value staged is my checkout with instance being instance
+        when staged.code does not equal "ok" then
+            give grant_reply with effect being (failed_effect with code being staged.code, uncertain being my.outcome_unknown), grant_id being 0
+        end when
+        value revoked is staged.state.authority.revoke with caller being caller, grant_id being grant_id
+        give my finish_grant with state being staged.state, grant being revoked
+    end paragraph
+
+    public get receives instance as text, caller as access_context, grant_id as number, key as text,
+        max_body_bytes as number returns record_reply of enigma.records.session::record_get_receipt begin paragraph
+        value staged is my checkout with instance being instance
+        when staged.code does not equal "ok" then
+            give empty_get with effect being (failed_effect with code being staged.code, uncertain being my.outcome_unknown)
+        end when
+        value state is staged.state
+        value access is state.authority.authorize with caller being caller, grant_id being grant_id, scope being my.scope, action being 1
+        when access.code does not equal "ok" then
+            give empty_get with effect being (my finish with state being state, code being "denied")
+        end when
+        when not (valid_key with key being key) or max_body_bytes is less than 0 or max_body_bytes is greater than (record_body_limit with nothing) then
+            give empty_get with effect being (my finish with state being state, code being "invalid")
+        end when
+        when max_body_bytes is greater than access.limits.max_read_bytes then
+            give empty_get with effect being (my finish with state being state, code being "limit")
+        end when
+        value position is state.index.find with key being key
+        when position is less than 0 then
+            give empty_get with effect being (my finish with state being state, code being "ok")
+        end when
+        value entry is (state.index.row with index being position).unwrap with nothing
+        when entry.byte_length is greater than max_body_bytes then
+            give empty_get with effect being (my finish with state being state, code being "limit")
+        end when
+        value body is read_body with directory being my.directory, entry being entry
+        when not body.ok then
+            give empty_get with effect being (my poison with code being "corrupt", uncertain being no)
+        end when
+        value effect is my finish with state being state, code being "ok"
+        when not effect.confirmed then give empty_get with effect being effect end when
+        give get_reply with effect being effect, found being yes, content being body.content, version being entry.version
+    end paragraph
+
+    public put receives instance as text, caller as access_context, grant_id as number, key as text,
+        content as array of override byte, expected_version as number returns record_reply of enigma.records.session::record_put_receipt begin paragraph
+        value staged is my checkout with instance being instance
+        when staged.code does not equal "ok" then
+            give put_reply with effect being (failed_effect with code being staged.code, uncertain being my.outcome_unknown), version being 0, byte_length being 0
+        end when
+        value state is staged.state
+        value access is state.authority.authorize with caller being caller, grant_id being grant_id, scope being my.scope, action being 2
+        when access.code does not equal "ok" then
+            give put_reply with effect being (my finish with state being state, code being "denied"), version being 0, byte_length being 0
+        end when
+        value byte_length is the length of content
+        when not (valid_key with key being key) or expected_version is less than 0 or expected_version is greater than (record_sequence_limit with nothing) then
+            give put_reply with effect being (my finish with state being state, code being "invalid"), version being 0, byte_length being 0
+        end when
+        when byte_length is greater than (record_body_limit with nothing) then
+            give put_reply with effect being (my finish with state being state, code being "capacity"), version being 0, byte_length being 0
+        end when
+        when byte_length is greater than access.limits.max_write_bytes then
+            give put_reply with effect being (my finish with state being state, code being "limit"), version being 0, byte_length being 0
+        end when
+        when not (valid_utf8 with content being content) then
+            give put_reply with effect being (my finish with state being state, code being "invalid"), version being 0, byte_length being 0
+        end when
+        value digest is sha256_hex with data being content
+        value drawn is random_hex with byte_count being 16
+        when digest.is_error with nothing or drawn.is_error with nothing then
+            give put_reply with effect being (my poison with code being "storage_error", uncertain being no), version being 0, byte_length being 0
+        end when
+        value body_id is drawn.unwrap with nothing
+        value planned is stage_record_put with index being state.index, key being key, byte_length being byte_length,
+            body_id being body_id, digest being (digest.unwrap with nothing), expected_version being expected_version
+        when planned.code equals "corrupt" then
+            give put_reply with effect being (my poison with code being "corrupt", uncertain being no), version being 0, byte_length being 0
+        end when
+        when planned.code does not equal "ok" then
+            give put_reply with effect being (my finish with state being state, code being planned.code), version being 0, byte_length being 0
+        end when
+        value previous_index is state.index
+        set state.index to planned.index
+        set state.generation to my.generation plus 1
+        value candidate is prepare_manifest with state being state
+        when candidate.code equals "capacity" then
+            set state.index to previous_index
+            give put_reply with effect being (my finish with state being state, code being "capacity"), version being 0, byte_length being 0
+        end when
+        when candidate.code does not equal "ok" then
+            give put_reply with effect being (my poison with code being "storage_error", uncertain being no), version being 0, byte_length being 0
+        end when
+        value directory_checked is is_private_directory with path being (objects_path with directory being my.directory)
+        when directory_checked.is_error with nothing or not (directory_checked.unwrap with nothing) then
+            give put_reply with effect being (my poison with code being "storage_error", uncertain being no), version being 0, byte_length being 0
+        end when
+        value path is body_path with directory being my.directory, body_id being body_id
+        value written is write_bytes_durable with path being path, content being content, replace being no
+        when written.is_error with nothing or not (written.unwrap with nothing) then
+            !!! A body may have been published, but the manifest is untouched.
+            give put_reply with effect being (my poison with code being "storage_error", uncertain being no), version being 0, byte_length being 0
+        end when
+        value private is is_private_regular_file with path being path
+        when private.is_error with nothing or not (private.unwrap with nothing) then
+            give put_reply with effect being (my poison with code being "storage_error", uncertain being no), version being 0, byte_length being 0
+        end when
+        give put_reply with effect being (my publish with state being state, candidate being candidate, code being "ok"),
+            version being planned.version, byte_length being byte_length
+    end paragraph
+
+    public list_keys receives instance as text, caller as access_context, grant_id as number,
+        max_keys as number, max_metadata_bytes as number, max_scan_keys as number returns record_reply of enigma.records.session::record_list_receipt begin paragraph
+        value staged is my checkout with instance being instance
+        value empty is open_record_key_batch with nothing
+        when staged.code does not equal "ok" then
+            give list_reply with effect being (failed_effect with code being staged.code, uncertain being my.outcome_unknown), entries being empty, generation being 0
+        end when
+        value state is staged.state
+        value access is state.authority.authorize with caller being caller, grant_id being grant_id, scope being my.scope, action being 4
+        when access.code does not equal "ok" then
+            give list_reply with effect being (my finish with state being state, code being "denied"), entries being empty, generation being 0
+        end when
+        when max_keys is less than 0 or max_keys is greater than (record_key_limit with nothing) or max_scan_keys is less than 0 or max_scan_keys is greater than (record_key_limit with nothing) or
+            max_metadata_bytes is less than 0 or max_metadata_bytes is greater than (record_list_bytes_limit with nothing) then
+            give list_reply with effect being (my finish with state being state, code being "invalid"), entries being empty, generation being 0
+        end when
+        when max_keys is greater than access.limits.max_list_keys or max_scan_keys is greater than access.limits.max_scan_keys or
+            max_metadata_bytes is greater than access.limits.max_list_metadata_bytes then
+            give list_reply with effect being (my finish with state being state, code being "limit"), entries being empty, generation being 0
+        end when
+        value listing is state.index.list_keys with max_keys being max_keys, max_metadata_bytes being max_metadata_bytes, max_scan_keys being max_scan_keys
+        value effect is my finish with state being state, code being listing.code
+        give list_reply with effect being effect, entries being listing.entries, generation being my.generation
+    end paragraph
+end class
+
+public record_open_result begin record
+    field code as text
+    field outcome_unknown as boolean
+    field owner as record_owner
+end record
+
+blank_owner receives directory as text returns record_owner begin paragraph
+    give build record_owner with directory being directory, database_id being "", scope being "", incarnation being "", generation being 0,
+        clock_floor being 0, payload being "", lock_token being 0, active being no, poisoned being no, outcome_unknown being no
+end paragraph
+
+failed_open receives owner as record_owner, code as text, uncertain as boolean returns record_open_result begin paragraph
+    value closed is owner.close with nothing
+    when closed does not equal "closed" then
+        give build record_open_result with code being "lock_error", outcome_unknown being uncertain, owner being owner
+    end when
+    give build record_open_result with code being code, outcome_unknown being uncertain, owner being owner
+end paragraph
+
+activate receives owner as record_owner, state as record_manifest, payload as text, code as text returns record_open_result begin paragraph
+    set owner.database_id to state.database_id
+    set owner.scope to state.scope
+    set owner.incarnation to state.incarnation
+    set owner.generation to state.generation
+    set owner.clock_floor to state.authority.identities.clock_floor
+    set owner.payload to payload
+    set owner.active to yes
+    give build record_open_result with code being code, outcome_unknown being no, owner being owner
+end paragraph
+
+public create_record_database receives directory as text, scope as text returns record_open_result begin paragraph
+    value selected is pin_directory with path being directory
+    value owner is blank_owner with directory being selected
+    when selected equals "" or not (valid_record_scope with scope being scope) then
+        give failed_open with owner being owner, code being "invalid", uncertain being no
+    end when
+    value created is create_private_directory with path being selected
+    when created.is_error with nothing or not (created.unwrap with nothing) then
+        give failed_open with owner being owner, code being "create_error", uncertain being no
+    end when
+    value private is is_private_directory with path being selected
+    when private.is_error with nothing or not (private.unwrap with nothing) then
+        give failed_open with owner being owner, code being "unsafe_directory", uncertain being no
+    end when
+    value locked is acquire_file_lock with path being (selected plus "/.lock"), create being yes
+    when locked.is_error with nothing then give failed_open with owner being owner, code being "lock_error", uncertain being no end when
+    set owner.lock_token to locked.unwrap with nothing
+    value objects is create_private_directory with path being (objects_path with directory being selected)
+    when objects.is_error with nothing or not (objects.unwrap with nothing) then
+        give failed_open with owner being owner, code being "storage_error", uncertain being no
+    end when
+    value objects_private is is_private_directory with path being (objects_path with directory being selected)
+    when objects_private.is_error with nothing or not (objects_private.unwrap with nothing) then
+        give failed_open with owner being owner, code being "unsafe_directory", uncertain being no
+    end when
+    value database_id is random_hex with byte_count being 16
+    value incarnation is random_hex with byte_count being 16
+    when database_id.is_error with nothing or incarnation.is_error with nothing then
+        give failed_open with owner being owner, code being "storage_error", uncertain being no
+    end when
+    value state is new_record_manifest with database_id being (database_id.unwrap with nothing), incarnation being (incarnation.unwrap with nothing), scope being scope
+    value candidate is prepare_manifest with state being state
+    when candidate.code does not equal "ok" then give failed_open with owner being owner, code being candidate.code, uncertain being no end when
+    when (publish_payload with path being (manifest_path with directory being selected), prepared being candidate.envelope, replace being no) does not equal "ok" then
+        give failed_open with owner being owner, code being "storage_error", uncertain being yes
+    end when
+    value synced is sync_directory with path being (parent_directory with path being selected)
+    when synced.is_error with nothing or not (synced.unwrap with nothing) then
+        give failed_open with owner being owner, code being "storage_error", uncertain being yes
+    end when
+    give activate with owner being owner, state being state, payload being candidate.payload, code being "created"
+end paragraph
+
+public open_record_database receives directory as text, max_verify_bytes as number returns record_open_result begin paragraph
+    value selected is pin_directory with path being directory
+    value owner is blank_owner with directory being selected
+    when selected equals "" or max_verify_bytes is less than 0 or max_verify_bytes is greater than (record_live_bytes_limit with nothing) then
+        give failed_open with owner being owner, code being "invalid", uncertain being no
+    end when
+    value private is is_private_directory with path being selected
+    when private.is_error with nothing or not (private.unwrap with nothing) then
+        give failed_open with owner being owner, code being "unsafe_directory", uncertain being no
+    end when
+    value locked is acquire_file_lock with path being (selected plus "/.lock"), create being no
+    when locked.is_error with nothing then give failed_open with owner being owner, code being "lock_error", uncertain being no end when
+    set owner.lock_token to locked.unwrap with nothing
+    value loaded is load_payload with path being (manifest_path with directory being selected)
+    when not loaded.ok then give failed_open with owner being owner, code being "corrupt", uncertain being no end when
+    value decoded is decode_record_manifest with payload being loaded.payload
+    when decoded.code does not equal "ok" then give failed_open with owner being owner, code being decoded.code, uncertain being no end when
+    value state is decoded.state
+    when state.index.live_bytes is greater than max_verify_bytes then give failed_open with owner being owner, code being "limit", uncertain being no end when
+    when state.generation is at least 2147483646 then give failed_open with owner being owner, code being "exhausted", uncertain being no end when
+    value objects_private is is_private_directory with path being (objects_path with directory being selected)
+    when objects_private.is_error with nothing or not (objects_private.unwrap with nothing) then
+        give failed_open with owner being owner, code being "corrupt", uncertain being no
+    end when
+    repeat for offset from 0 to (state.index.count with nothing)
+        value entry is (state.index.row with index being offset).unwrap with nothing
+        when not (read_body with directory being selected, entry being entry).ok then
+            give failed_open with owner being owner, code being "corrupt", uncertain being no
+        end when
+    end repeat
+    value incarnation is random_hex with byte_count being 16
+    when incarnation.is_error with nothing or (incarnation.unwrap with nothing) equals state.incarnation then
+        give failed_open with owner being owner, code being "storage_error", uncertain being no
+    end when
+    evaluate state.authority.retire_and_reclaim with nothing
+    set state.incarnation to incarnation.unwrap with nothing
+    set state.generation to state.generation plus 1
+    value candidate is prepare_manifest with state being state
+    when candidate.code does not equal "ok" then give failed_open with owner being owner, code being candidate.code, uncertain being no end when
+    when (publish_payload with path being (manifest_path with directory being selected), prepared being candidate.envelope, replace being yes) does not equal "ok" then
+        give failed_open with owner being owner, code being "storage_error", uncertain being yes
+    end when
+    give activate with owner being owner, state being state, payload being candidate.payload, code being "ready"
+end paragraph

@@ -1,0 +1,58 @@
+book enigma.records.example
+
+read arg_count, arg from nil.std.system
+read access_context from enigma.authority
+read record_access_limits from enigma.records.authority
+read create_record_database, open_record_database, record_open_result from enigma.records.session
+read connect_records, provision_record_host from enigma.records.client
+
+open_example receives mode as text, directory as text returns record_open_result begin paragraph
+    when mode equals "create" then
+        give create_record_database with directory being directory, scope being "example"
+    end when
+    give open_record_database with directory being directory, max_verify_bytes being 1024
+end paragraph
+
+main returns override integer begin paragraph
+    when (arg_count with nothing) does not equal 2 then give 2 end when
+    value mode is arg with index being 0
+    value directory is arg with index being 1
+    when mode does not equal "create" and mode does not equal "reopen" then give 2 end when
+    value opened is open_example with mode being mode, directory being directory
+    when mode equals "create" then
+        expect opened.code equals "created"
+    otherwise
+        expect opened.code equals "ready"
+    end when
+    value owner is opened.owner
+    value state is owner.describe_state with nothing
+    expect state.code equals "ok"
+    expect state.scope equals "example"
+    value tick is state.clock_floor plus 1
+    value limits is build record_access_limits with max_read_bytes being 1024, max_write_bytes being 1024,
+        max_scan_keys being 8, max_list_keys being 8, max_list_metadata_bytes being 1024
+    value grant is provision_record_host with owner being owner, entity being "example:host", session_id being tick,
+        actions being 7, expires being (tick plus 100), limits being limits, tick being tick
+    expect grant.confirmed
+    expect grant.receipt.code equals "ok"
+    value caller is build access_context with entity being "example:host", session being tick, audience being "enigma", tick being tick
+    value client is connect_records with owner being owner, grant_id being grant.receipt.grant_id
+    when mode equals "create" then
+        value body as array of override byte is [123, 125]
+        value saved is client.put with caller being caller, key being "sample", content being body, expected_version being 0
+        expect saved.confirmed
+        expect saved.receipt.code equals "ok"
+        expect saved.receipt.version equals 1
+    end when
+    value observed is client.get with caller being caller, key being "sample", max_body_bytes being 1024
+    expect observed.confirmed
+    expect observed.receipt.code equals "ok"
+    expect observed.receipt.found
+    expect observed.receipt.version equals 1
+    expect observed.receipt.byte_length equals 2
+    expect (observed.receipt.content at 0) equals 123
+    expect (observed.receipt.content at 1) equals 125
+    expect (owner.close with nothing) equals "closed"
+    say formatted "record {mode} ok"
+    give 0
+end paragraph
