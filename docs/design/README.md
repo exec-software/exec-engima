@@ -51,6 +51,13 @@ causal dependency model, network transport, or cryptography exists. Direct
 `enigma.client` use remains volatile; durable receipts come through a POSIX
 storage host or the importable session defined in ENI-0007.
 
+## Proposed application-record profile
+
+[ENI-0009](ENI-0009-application-records.md) proposes exact large bodies,
+compare-and-set versions, complete key enumeration, byte authority, and staged
+application import. It is not implemented or qualified. Evidence limits and
+current durable APIs remain those described above.
+
 ## Authority direction
 
 Follow Anomalous's separation of entity identity, admitted session, and scoped

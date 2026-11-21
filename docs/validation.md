@@ -1,5 +1,62 @@
 # Development validation
 
+## Bounded checkpoint capacity — 2026-11-21
+
+Engine source is
+[`9408f12`](https://github.com/exec-software/exec-enigma/commit/9408f128e7793ee8c9aa44fcf3899a1a0059fede).
+Validation used the same complete Linux x86_64 development SDK from clean NIL
+source [`dbb4379`](https://github.com/exec-software/exec-nil-framework/commit/dbb4379946f6800a79e485dcd890e8f5b0902b31),
+immutable generation `936298a9c20142f2634744a0154ee32d7e5807cc1f3f743d08059fab61f0b7bf`.
+The SDK and framework source were unchanged by this capacity work.
+
+```sh
+./scripts/test.sh
+./scripts/test-durable-client.sh
+./scripts/test-matrix-host.sh
+./scripts/test-capacity.sh
+```
+
+- The full runner passes 176 Matrix executions across VM/native, 24 CLI checks,
+  both volatile examples, and 40 existing Python methods. Twenty methods are
+  deliberately skipped there: nine application, five capacity, and six
+  host-fault methods belong to the separate runners.
+- The application runner passes 46 Matrix executions and nine external Python
+  methods, each exercised on VM/native.
+- The host runner passes the shared host logic, all 13 recovery and six external
+  fault methods against Matrix VM, Matrix native, and Python hosts, and both
+  checkpoint interoperability directions.
+- The capacity runner passes 16 enabled method/profile executions: five against
+  each Matrix route and three against each Python-worker route. Four typed
+  cases are intentionally skipped on the Python profiles because the same
+  typed fixture already ran on each route.
+
+The expanded-store oracle independently seeds 1,023 assertions, verifies full
+counts with 128-item replies, proves small grants stay small, appends the reserved
+withdrawal at revision 1,024, and explicitly compacts its pair. Recomputed-digest
+fixtures with too many rows, a missing event beyond the former ceiling, or a
+duplicate withdrawal fail closed without rewriting the canonical file.
+
+The byte-capacity oracle uses control characters and UTF-8. A refused write
+preserves evidence, grant definitions, issued identifiers, and revision while
+committing its observed clock floor and successor generation. The same owner
+continues serving; revocation, restart retirement, and fresh admission remain
+usable. Typed capacity replies are confirmed domain refusals rather than
+uncertain failures. Existing full-width legacy checkpoints still admit fresh
+read grants and return complete batches through both hosts and the typed client.
+
+A separate 1,024-event history with 512 assertions and 512 withdrawals passes
+codec round trips, complete empty resolution, full compaction, and next-ID
+checks on both routes. Its entire fixture took 8.63 seconds on VM and 15.40
+seconds native; these are test timings, not isolated-operation benchmarks.
+All external receipt/phase timeouts remain 30 seconds. Shell/Python syntax,
+local documentation links, and `git diff --check` pass.
+
+This qualifies the bounded checkpoint profile in
+[ENI-0008](design/ENI-0008-bounded-capacity.md), not document storage, scalable
+query latency, release SDKs, encryption, native admission, general rollback
+protection, or hardware power-cut behavior. The application-record profile in
+[ENI-0009](design/ENI-0009-application-records.md) remains proposed and unimplemented.
+
 ## Durable application integration — 2026-11-20
 
 Application source is
