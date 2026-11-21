@@ -27,8 +27,8 @@ synthetic create/reopen example and run `scripts/test-records.sh`. The local
 profile has one writer, up to 2,048 live keys, and separate index, grant, body,
 and aggregate byte limits. Open verifies the bodies under `max_verify_bytes`
 and commits a fresh incarnation before accepting calls. Replaced bodies and
-orphans still occupy disk. Goetic import and combined SDK qualification are
-separate work. [Record contract](design/ENI-0009-application-records.md)
+orphans still occupy disk. Goetic uses this profile on its pinned combined SDK.
+[Record contract](design/ENI-0009-application-records.md) · [Consumer validation](validation.md#goetic-record-consumer--2026-11-21)
 
 ## Run the evidence example
 

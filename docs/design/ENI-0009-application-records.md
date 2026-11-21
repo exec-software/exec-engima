@@ -1,8 +1,7 @@
 # ENI-0009: Application records with immutable bodies
 
-Status is implemented for local Linux development with the matching NIL SDK.
-Goetic adapter, import, and combined SDK qualification are separate work.
-See the [validation record](../validation.md) for the tested scope.
+Implemented and used by Goetic on Linux with its pinned combined development
+SDK. See the [validation record](../validation.md) for the tested scope.
 
 ## Record model
 

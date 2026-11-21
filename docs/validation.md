@@ -1,5 +1,25 @@
 # Development validation
 
+## Goetic record consumer — 2026-11-21
+
+Goetic's workspace migration uses Enigma source
+[`2eec2bd`](https://github.com/exec-software/exec-enigma/commit/2eec2bd7d9188367f3548294e6f2510f98501569),
+which contains the same engine source as `942c47a`. The consumer pins combined
+Linux development SDK manifest
+`5931094a3cf696f0c176d370864df4b15c4f22f108074f9ca682a3db15f8388a`
+from NIL source `167ae3a6b0abb69c26e943a008ee6eb1eac8f13d`.
+
+Goetic reports 26 Matrix tests, 101 HTTP checks, and 23 migration filesystem
+checks passing in isolated validation. Its real adapter and transfer tests
+cover staged import, exact body preservation, activation, subsequent writes,
+restart, and refusal of corrupt or foreign selected storage. Goetic reports
+the live cutover completed with its original records preserved.
+[Goetic integration validation](https://github.com/exec-software/exec-goetic/blob/9d99e801012e24582b1ac14e7bae0949b91799e6/code/exec-goetic/docs/enigma-validation.md)
+
+Goetic uses the interpreter for its long-lived owner and client bindings.
+The Enigma VM and native tests below qualify the standalone record API on
+Enigma's development SDK.
+
 ## Application record storage — 2026-11-21
 
 The source revision is
@@ -41,8 +61,7 @@ manifests block opening. An active read detects modified body bytes and
 poisons its owner. These cases exercise real processes and files on Linux.
 
 The tests qualify the record profile on the pinned Enigma development SDK.
-The combined Goetic SDK, consumer adapter, and live import have their own
-qualification. The format stores plaintext bodies and retains unreferenced
+The format stores plaintext bodies and retains unreferenced
 files after replacement or interrupted writes. See
 [ENI-0009](design/ENI-0009-application-records.md).
 

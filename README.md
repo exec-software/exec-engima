@@ -41,9 +41,9 @@ defines commit and recovery behavior.
 
 The application record store preserves exact UTF-8 bodies up to 4 MiB. It
 supports conditional replacement by version and complete ordered enumeration,
-with explicit byte and key budgets. Its typed Matrix package is ready for local
-development on the pinned SDK. Goetic import and combined SDK qualification
-are separate work. [Record package](ext/enigma-records/README.md)
+with explicit byte and key budgets. Goetic uses the typed Matrix package for
+durable workspace storage on a qualified Linux development SDK.
+[Record package](ext/enigma-records/README.md) · [Consumer validation](docs/validation.md#goetic-record-consumer--2026-11-21)
 
 Authority follows Anomalous's model, currently implemented as a trusted-host
 policy fixture. Matrix fields are public: this is **not isolation against hostile

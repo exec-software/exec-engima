@@ -55,8 +55,8 @@ storage host or the importable session defined in ENI-0007.
 
 The separate record profile stores exact UTF-8 bodies up to 4 MiB, with
 compare-and-set versions, complete key enumeration, and separate byte authority.
-Its local durability contract is implemented. Goetic import and combined SDK
-qualification are separate work. [ENI-0009](ENI-0009-application-records.md)
+Goetic uses the profile on its pinned combined development SDK.
+[ENI-0009](ENI-0009-application-records.md) · [Consumer validation](../validation.md#goetic-record-consumer--2026-11-21)
 
 ## Authority direction
 

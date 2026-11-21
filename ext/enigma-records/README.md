@@ -56,5 +56,5 @@ attempting another write.
 Use one synchronous owner for the life of the NIL invocation and close it
 explicitly. Opening scans every referenced body within `max_verify_bytes`
 and retires earlier grants before returning a ready owner. Files remain private
-and plaintext. Obsolete bodies still use disk space. Goetic import and combined
-SDK qualification are tracked separately. See the [record contract](../../docs/design/ENI-0009-application-records.md).
+and plaintext. Obsolete bodies still use disk space.
+[Record contract](../../docs/design/ENI-0009-application-records.md) · [Goetic validation](../../docs/validation.md#goetic-record-consumer--2026-11-21)
