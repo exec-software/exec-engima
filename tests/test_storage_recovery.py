@@ -340,6 +340,43 @@ class StorageRecoveryTests(unittest.TestCase):
                     self.assertEqual(checkpoint(path)[0], before)
                     self.assertEqual(self.install(first)["code"], "ok")
 
+    def test_missing_recent_events_fail_closed_even_with_a_matching_digest(self) -> None:
+        # Compaction can leave holes only below its declared horizon. A valid
+        # checksum over an impossible tail must not become a confident answer.
+        for target in TARGETS:
+            for variant in ("first", "middle", "last", "all"):
+                with self.subTest(target=target, variant=variant), tempfile.TemporaryDirectory(prefix="enigma-recovery-") as temporary:
+                    path = Path(temporary) / "db"
+                    self.initialize(path, target)
+                    with HostSession(path, target) as host:
+                        grant = self.install(host)["grant_id"]
+                        for revision in range(3):
+                            added = host.request({"op": "support", "caller": caller(), "grant_id": grant,
+                                                  "claim": CLAIM, "source": "synthetic:tail",
+                                                  "expected_revision": revision})
+                            self.assertEqual(added["code"], "ok")
+                    canonical = path / "checkpoint.json"
+                    envelope = json.loads(canonical.read_bytes())
+                    state = json.loads(envelope["payload"])
+                    self.assertEqual((state["revision"], state["retained_from"]), (3, 0))
+                    if variant == "all":
+                        state["events"] = []
+                    else:
+                        del state["events"][{"first": 0, "middle": 1, "last": 2}[variant]]
+                    envelope["payload"] = json.dumps(state, separators=(",", ":"))
+                    envelope["sha256"] = hashlib.sha256(envelope["payload"].encode("utf-8")).hexdigest()
+                    canonical.write_text(json.dumps(envelope), encoding="utf-8")
+                    broken = canonical.read_bytes()
+                    result = subprocess.run(
+                        [*HOST_COMMAND, "serve", str(path), "--target", target],
+                        input=b"", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        timeout=30, check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, b"")
+                    self.assertIn(b"enigma store: corrupt", result.stderr)
+                    self.assertEqual(canonical.read_bytes(), broken)
+
     def test_restarts_reclaim_grant_rows_and_never_reissue_an_identifier(self) -> None:
         # ENI-0004 end to end. The exhaustion proof is a thousand cycles in
         # the enigma.authority suite, where it costs milliseconds. What needs
@@ -397,7 +434,13 @@ class StorageRecoveryTests(unittest.TestCase):
                                          "evidence_id": churn["evidence_id"], "expected_revision": -1})
                     self.assertEqual(gone["code"], "ok")
                     before = len(checkpoint(path)[1]["events"])
-                    compacted = host.request({"op": "compact", "caller": caller(), "grant_id": grant})
+                    denied = host.request({"op": "compact", "caller": caller(), "grant_id": grant})
+                    self.assertEqual(denied, {"code": "denied", "instance": "", "generation": 0})
+                    self.assertEqual(len(checkpoint(path)[1]["events"]), before)
+                    maintenance = self.install(host, entity="agent:maintenance", session=31, operations=16)
+                    self.assertEqual(maintenance["code"], "ok")
+                    compacted = host.request({"op": "compact", "caller": caller("agent:maintenance", 31),
+                                              "grant_id": maintenance["grant_id"]})
                     self.assertEqual(compacted["code"], "ok")
                     # The withdrawn pair goes; the assertion nobody retracted stays.
                     self.assertEqual(compacted["reclaimed"], 2)

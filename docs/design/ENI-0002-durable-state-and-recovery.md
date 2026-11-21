@@ -26,10 +26,13 @@ protection. JSON interchange uses the checked NILData implementation; arbitrary
 data is never concatenated into JSON syntax.
 
 The payload contains schema, database identity, current incarnation, generation,
-scope, event history, complete permission registry including parent ancestry and
-revocation flags, nonreused ID counters implicit in retained rows, and clock floor.
+scope, retained events, revision and retention horizon, permission registry
+including parent ancestry and revocation flags, explicit nonreused ID counters,
+the grant retirement high-water mark, and clock floor.
 The Matrix decoder validates exact shapes, types, limits, withdrawal semantics,
-and grant attenuation before exposing any state. There is no partial recovery of
+and grant attenuation before exposing any state. Events above the retention
+horizon must form a complete consecutive tail through the issued revision;
+missing recent events fail closed even with a matching digest. There is no partial recovery of
 evidence without matching authority state.
 
 The host holds one exclusive nonblocking advisory lock for the full session. It
@@ -57,7 +60,9 @@ automatic fallback to an earlier snapshot: an older valid file may predate an
 acknowledged revocation. Orphaned staging files are never recovery candidates.
 
 Before `ready`, the Matrix recovery transition retires **all** loaded grants,
-preserving their definitions, IDs, ancestry, and existing revocation history.
+reclaims their rows, and preserves the issued counter and retirement high-water
+mark. The mark records that reclaimed identifiers were revoked; it does not
+retain their definitions or per-grant revocation provenance.
 It retains the clock floor and evidence history, installs a fresh host-generated
 incarnation, and advances the checkpoint generation. The host durably commits
 that transition before serving another operation.
@@ -74,7 +79,8 @@ retired row, so repeated recovery and re-admission exhausted that ceiling and
 a database could brick itself through ordinary restarts.
 [ENI-0004](ENI-0004-authority-capacity.md) separates an identifier from its
 position and reclaims retired rows during recovery, so the ceiling now bounds
-live grants. Exhaustion of that live ceiling still fails closed.
+retained grant rows, including those revoked during the current session.
+Exhaustion still fails closed until recovery reclaims the retired rows.
 
 ## Failures and limits of the guarantee
 

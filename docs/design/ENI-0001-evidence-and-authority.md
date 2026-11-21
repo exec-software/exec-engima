@@ -60,8 +60,10 @@ There is no administrator bypass and an entity label alone grants nothing.
 
 The in-memory policy registry binds a grant to an exact entity/session, audience
 `enigma`, scope, operation mask, expiry, and per-request work/output limits.
-Operations are resolve/inspect (`1`), assert (`2`), withdraw-own (`4`), and delegate
-(`8`). Delegation inherits scope and cannot enlarge rights, expiry, or limits.
+Operations are resolve/inspect (`1`), assert (`2`), withdraw-own (`4`), delegate
+(`8`), and scope-wide compaction (`16`). Compaction can delete historical
+explanations and requires its own permission; withdraw-own does not imply it.
+Delegation inherits scope and cannot enlarge rights, expiry, or limits.
 Authorization checks live ancestry; revoking a grant invalidates descendants.
 Expired, copied, mismatched, unknown, and clock-rollback contexts fail closed.
 Denial returns a fixed empty response before examining query or evidence data.
@@ -98,13 +100,14 @@ failure and process crashes have no transactional or recovery guarantee.
 Inspection and withdrawal require the current snapshot/history length to fit
 the grant's work ceiling; they return an empty `limit` receipt otherwise. Store
 capacity counts assertions and withdrawals together. A full store rejects all
-further events, including withdrawals; this prototype has no compaction or
-reserved maintenance capacity yet.
+further events, including withdrawals. Explicit compaction can reclaim pairs
+already withdrawn, but there is no reserved maintenance capacity: 128 active
+assertions still fill the store.
 
 ## Package boundary
 
 The companion Matrix library lives at `ext/enigma-client`, namespace
 `enigma.client`, above the engine and outside `nil.std`. It exposes typed
-support, opposition, resolution, inspection, and withdrawal, and a discoverable
-surface descriptor. A future text language must compile into the same operation
+support, opposition, resolution, inspection, withdrawal, and explicit compaction,
+with a discoverable surface descriptor. A future text language must compile into the same operation
 model and authority path. Package-manager publication is deferred.

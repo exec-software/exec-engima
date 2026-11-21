@@ -200,7 +200,7 @@ valid_state receives snapshot as durable_state returns boolean begin paragraph
         end when
         when not (valid_label with input being authority.holder_entities at index) or
             (authority.holder_sessions at index) is at most 0 or (authority.scopes at index) does not equal store.scope_name or
-            rights is less than 1 or rights is greater than 15 or (authority.expiries at index) is at most 0 or
+            rights is less than 1 or rights is greater than 31 or (authority.expiries at index) is at most 0 or
             (authority.work_limits at index) is less than 1 or (authority.work_limits at index) is greater than 65536 or
             (authority.result_limits at index) is less than 1 or (authority.result_limits at index) is greater than 65536 or
             parent is less than 0 then
@@ -244,6 +244,10 @@ valid_state receives snapshot as durable_state returns boolean begin paragraph
         (the length of store.targets) does not equal held then
         give no
     end when
+    !!! Compaction removes only events at or below its horizon. Every issued
+    !!! revision above it must still exist; otherwise an incomplete checkpoint
+    !!! could silently turn missing evidence into a complete unknown answer.
+    variable retained_tail as number is store.retained_from
     variable withdrawn as array of number is []
     repeat for index from 0 to held
         value event_id is store.event_ids at index
@@ -255,6 +259,12 @@ valid_state receives snapshot as durable_state returns boolean begin paragraph
         end when
         when index is greater than 0 and event_id is at most (store.event_ids at (index minus 1)) then
             give no
+        end when
+        when event_id is greater than store.retained_from then
+            when event_id does not equal retained_tail plus 1 then
+                give no
+            end when
+            set retained_tail to event_id
         end when
         value event_kind is store.event_kinds at index
         when not (valid_label with input being store.entities at index) or (store.sessions at index) is at most 0 then
@@ -301,7 +311,7 @@ valid_state receives snapshot as durable_state returns boolean begin paragraph
             give no
         end when
     end repeat
-    give yes
+    give retained_tail equals revision
 end paragraph
 
 corrupt_state returns state_result begin paragraph
@@ -684,6 +694,62 @@ encoder_validates_host_array_shapes_and_semantic_state begin test
     value negative_state is new_state with database_id being "db", incarnation being "boot", scope being "scope"
     set negative_state.generation to minus 1
     expect (encode_state with snapshot being negative_state).code does not equal "ok"
+end test
+
+note suite "enigma.storage.codec"
+missing_revisions_above_the_retention_horizon_are_corrupt begin test
+    value root is (from_json with (fixture_payload with nothing)).unwrap with nothing
+    value events is field_value with node being root, key being "events"
+    !!! A missing first event and a missing final event both used to pass:
+    !!! ordering alone cannot establish that the reconstructable tail is whole.
+    value without_first is (array_remove with events, 0).unwrap with nothing
+    value missing_first is (object_set with root, "events", without_first).unwrap with nothing
+    expect (decode_state with payload being (to_json with missing_first).unwrap with nothing).code equals "corrupt"
+    value without_last is (array_remove with events, 2).unwrap with nothing
+    value missing_last is (object_set with root, "events", without_last).unwrap with nothing
+    expect (decode_state with payload being (to_json with missing_last).unwrap with nothing).code equals "corrupt"
+    !!! Two assertions at revisions 1 and 3 are otherwise valid rows but leave
+    !!! an impossible hole at revision 2 above a zero horizon.
+    value missing_middle is (object_set with root, "events", without_last).unwrap with nothing
+    value middle_payload is mutate_row with payload being (to_json with missing_middle).unwrap with nothing,
+        collection being "events", index being 1, key being "id",
+        replacement being (integer_value with "3").unwrap with nothing
+    expect (decode_state with payload being middle_payload).code equals "corrupt"
+    value empty_events is (new_array with nothing).unwrap with nothing
+    value empty_log is (object_set with root, "events", empty_events).unwrap with nothing
+    expect (decode_state with payload being (to_json with empty_log).unwrap with nothing).code equals "corrupt"
+    value broken_clock is fixture_state with nothing
+    set broken_clock.store.revision_value to 4
+    expect (encode_state with snapshot being broken_clock).code does not equal "ok"
+end test
+
+note suite "enigma.storage.codec"
+compacted_gaps_below_the_horizon_preserve_a_complete_tail begin test
+    value snapshot is fixture_state with nothing
+    value issued is snapshot.authority.install with entity being "agent:maintenance", session being 3,
+        scope being "codec-tests", operations being 18, expires being 100,
+        work_limit being 128, result_limit being 128, tick being 3
+    expect issued.code equals "ok"
+    value caller is build access_context with entity being "agent:maintenance", session being 3,
+        audience being "enigma", tick being 3
+    value reclaimed is snapshot.store.compact with authority being snapshot.authority, caller being caller,
+        grant_id being issued.grant_id, scope being "codec-tests"
+    expect reclaimed.code equals "ok"
+    expect snapshot.store.retained_from equals 3
+    value claim is build proposition with subject being "subject:new", relation being "reports", object_value being "ready"
+    value appended is snapshot.store.assert_claim with authority being snapshot.authority, caller being caller,
+        grant_id being issued.grant_id, scope being "codec-tests", claim being claim,
+        supports being yes, source being "fixture:after-compaction", expected_revision being 3
+    expect appended.code equals "ok"
+    value encoded is encode_state with snapshot being snapshot
+    expect encoded.code equals "ok"
+    value decoded is decode_state with payload being encoded.payload
+    expect decoded.code equals "ok"
+    expect decoded.state.store.retained_from equals 3
+    expect decoded.state.store.revision_value equals 4
+    expect (the length of decoded.state.store.event_ids) equals 2
+    expect (decoded.state.store.event_ids at 0) equals 1
+    expect (decoded.state.store.event_ids at 1) equals 4
 end test
 
 note suite "enigma.storage.codec"

@@ -8,6 +8,7 @@ object
     item is "resolve"
     item is "inspect"
     item is "withdraw"
+    item is "compact"
   end array
   max_events is 128
   max_text_units is 256

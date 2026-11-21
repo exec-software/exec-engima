@@ -164,13 +164,16 @@ dispatch receives snapshot as durable_state, request as `Value` returns `Value` 
     when operation equals "support" or operation equals "oppose" then
         set right to 2
     end when
-    !!! Compaction forgets history, so it needs withdrawal authority rather
-    !!! than read authority.
-    when operation equals "withdraw" or operation equals "compact" then
+    when operation equals "withdraw" then
         set right to 4
     end when
     when operation equals "delegate" then
         set right to 8
+    end when
+    !!! Forgetting history is scope-wide maintenance, separate from the right
+    !!! to withdraw only the caller's own evidence.
+    when operation equals "compact" then
+        set right to 16
     end when
     when right equals 0 then
         give base_receipt with code being "invalid"

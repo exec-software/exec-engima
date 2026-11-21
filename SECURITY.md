@@ -50,8 +50,9 @@ A grant identifier is issued rather than positional and is never reissued, so a
 reclaimed identifier is never handed to a different holder. A retirement
 high-water mark is retained, so a reclaimed grant is still refused as revoked
 rather than as one that never existed, though the engine no longer reports when
-or by whom it was revoked. Reclamation makes the grant ceiling a limit on live
-grants; before it, ordinary restarts spent a lifetime budget. Identifiers are
+or by whom it was revoked. Recovery reclaims retired rows so ordinary restarts
+do not spend a lifetime grant budget. The ceiling counts retained rows,
+including grants revoked during the current session. Identifiers are
 not protected against an operator restoring a checkpoint written before one was
 issued, which is a consequence of the rollback limit below. Persistent
 permission definitions do not authenticate a session after restart.
@@ -113,15 +114,18 @@ and then claim that old authority has been recovered safely.
 - Resolution distinguishes support, opposition, disagreement, and absence of
   evidence. A work-limited scan reports `incomplete`; an evidence-list cap is
   reported separately. Neither evidence state nor a source label proves truth.
-- Each store holds at most 128 retained events; a caller with withdrawal
-  authority may compact retracted evidence, after which a historical read
+- Each store holds at most 128 retained events; a caller with explicit scoped
+  compaction authority (`16`) may compact retracted evidence. Withdrawal of
+  one's own assertions (`4`) does not authorize deletion of scope-wide history.
+  After compaction a historical read
   below the resulting horizon reports `incomplete` rather than an answer the
   store can no longer substantiate. Proposition components and source text
   are bounded at 256 units under NIL's text-length operation; scope and entity
-  labels are bounded at 128. The authority registry retains at most 256 grants,
-  including revoked and retired rows. Recovery and re-admission can exhaust this
-  capacity; there is no compaction or identifier recycling.
-- Resolve meters inspected log events. Withdrawal and inspection return
+  labels are bounded at 128. The authority registry retains at most 256 grant
+  rows, including grants revoked in the current session; recovery retires and
+  reclaims every row while preserving issued counters and the retirement mark.
+  Identifiers are never recycled within a checkpoint lineage.
+- Resolve meters inspected log events. Withdrawal, compaction, and inspection return
   `limit` when their required scan exceeds the grant's work limit. Event budgets
   are not CPU-time quotas: bounded withdrawal checks add work within a scan.
 - These checks do not establish resistance to timing side channels, denial of

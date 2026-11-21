@@ -243,13 +243,13 @@ This record covers host language, not durability guarantees. Everything ENI-0002
 excludes stays excluded: no hardware power-cut qualification, no general
 anti-rollback, no detection of an externally restored coherent checkpoint, no
 key management or encryption, no durable replay or idempotency ledger, no
-backups or migrations. The grant ceiling now bounds live grants rather than
-every grant ever issued, per [ENI-0004](ENI-0004-authority-capacity.md), and
-still fails closed on exhaustion.
+backups or migrations. The grant ceiling bounds retained rows rather than
+every grant ever issued, per [ENI-0004](ENI-0004-authority-capacity.md). Grants
+revoked during a session still occupy rows until recovery; exhaustion fails closed.
 
 NIL-0028 is a Linux-tested POSIX source-runtime profile, not an installed or
 release SDK. It is committed on the framework's `codex/enigma-durable-io`
-branch, which is not yet pushed. Until it is released, a Matrix host builds only
+branch. Until it is released, a Matrix host builds only
 against a matching development SDK, and the port cannot be the only supported
 path. Non-Linux POSIX platforms need their own execution evidence; Windows
 returns an explicit unsupported-platform error before filesystem mutation.

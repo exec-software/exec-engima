@@ -61,15 +61,16 @@ hostile-process isolation, realtime-expiry guarantee, or native Anomalous adapte
 See the [security policy](../../SECURITY.md).
 
 The durable path retains evidence and security state together. Opening a store
-retains old grant rows and revocations, marks every old session grant retired,
-and commits a fresh random incarnation before admitting requests. New authority
+retires and reclaims every old session grant, preserves issued counters and
+the retirement mark, and commits a fresh random incarnation before admitting requests. New authority
 requires explicit re-admission; old-incarnation requests receive a fixed denial.
 Corruption or missing canonical state fails closed instead of restoring an older
 permission snapshot. An identifier is never recycled. Recovery reclaims the
-rows it retires, so the 256-grant ceiling bounds live grants rather than every
-grant a database will ever issue, and a reclaimed identifier is still refused
-as revoked rather than as one that never existed. Exhausting the live ceiling
-fails closed. See [ENI-0004](ENI-0004-authority-capacity.md).
+rows it retires, so the 256-row ceiling no longer bounds every grant a database
+will ever issue. It still counts rows revoked in the current session. A reclaimed
+identifier is refused as revoked rather than as one that never existed.
+Exhausting the retained-row ceiling fails closed. See
+[ENI-0004](ENI-0004-authority-capacity.md).
 
 Durability assumes a trusted owner and storage ancestry plus a local POSIX
 filesystem honoring sync, atomic rename, and advisory locks. A coherent older

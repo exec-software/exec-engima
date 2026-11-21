@@ -25,11 +25,25 @@ description, including a fresh operation array.
 | `resolve` | Inspect visible evidence at an explicit revision and work/output budgets. |
 | `inspect` | Retrieve one evidence item at an explicit revision. |
 | `withdraw` | Withdraw evidence through the engine's ownership and revision checks. |
+| `compact` | Explicitly reclaim retracted evidence across the scope under separate maintenance authority. |
 
 The client forwards exact revision and budget arguments. It does not retry
 writes, silently increase limits, choose a truth winner, or turn a partial
 answer into a complete one. `minus 1` requests the latest revision or disables
 a write revision precondition; `0` remains the real empty historical snapshot.
+
+`compact with nothing` returns a typed `compaction_receipt` with `code`,
+`revision`, the number of events `reclaimed`, and the `retained_from` history
+horizon. It preserves unwithdrawn assertions and issued identifiers. A resolve
+at a nonzero revision below that horizon reports `incomplete`; revision `0`
+stays exact. A reclaimed assertion is `not_found` through `inspect`.
+
+Compaction permanently gives up historical explanations. It requires the
+separate scope-wide maintenance right `16`; withdraw-own right `4` grants no
+compaction authority. Existing masks such as `7` (read, assert, withdraw-own)
+keep their previous authority. A host can explicitly install `23` to include
+compaction in that mask, subject to the same context, revocation, scope, and
+work-limit checks. Delegation can only retain rights already held by the parent.
 
 ## Host setup and trust
 

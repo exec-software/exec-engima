@@ -312,10 +312,10 @@ public evidence_store begin class
     !!! active there.
     public compact receives authority as authority_registry, caller as access_context,
         grant_id as number, scope as text returns write_receipt begin paragraph
-        !!! Compaction forgets history, so it is a write and needs withdrawal
-        !!! authority rather than read authority.
+        !!! Compaction forgets history across the scope. Dedicated maintenance
+        !!! authority keeps withdraw-own grants from gaining that power.
         value access is authority.authorize with caller being caller, grant_id being grant_id,
-            scope being scope, operation being 4
+            scope being scope, operation being 16
         when access.code does not equal "ok" or scope does not equal my scope_name then
             give failed_write with code being "denied"
         end when
@@ -712,7 +712,7 @@ churn_no_longer_spends_the_ceiling_and_a_kept_assertion_still_counts begin test
     !!! far past 128 while a separate assertion nobody retracted stays live.
     value authority is open_authority with nothing
     value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
-        operations being 15, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+        operations being 31, expires being 100, work_limit being 128, result_limit being 128, tick being 0
     value caller is test_context with entity being "agent:a"
     value store is open_store with scope being "work"
     value kept is store.assert_claim with authority being authority, caller being caller,
@@ -760,7 +760,7 @@ note suite "enigma.evidence"
 a_view_below_the_horizon_is_incomplete_rather_than_wrong begin test
     value authority is open_authority with nothing
     value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
-        operations being 15, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+        operations being 31, expires being 100, work_limit being 128, result_limit being 128, tick being 0
     value caller is test_context with entity being "agent:a"
     value store is open_store with scope being "work"
     value claim is test_claim with nothing
@@ -814,7 +814,7 @@ note suite "enigma.evidence"
 compaction_keeps_an_unwithdrawn_assertion_and_needs_authority begin test
     value authority is open_authority with nothing
     value writer is authority.install with entity being "agent:a", session being 1, scope being "work",
-        operations being 15, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+        operations being 31, expires being 100, work_limit being 128, result_limit being 128, tick being 0
     !!! Read-only authority cannot forget history.
     value reader is authority.install with entity being "agent:b", session being 1, scope being "work",
         operations being 1, expires being 100, work_limit being 128, result_limit being 128, tick being 0
@@ -840,4 +840,68 @@ compaction_keeps_an_unwithdrawn_assertion_and_needs_authority begin test
         max_work being 128, max_evidence being 128
     expect current.state equals "supported"
     expect current.complete
+end test
+
+note suite "enigma.evidence"
+compaction_requires_scoped_maintenance_and_preserves_denied_history begin test
+    value authority is open_authority with nothing
+    value writer_a is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 7, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value writer_b is authority.install with entity being "agent:b", session being 1, scope being "work",
+        operations being 7, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value withdrawer is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 4, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller_a is test_context with entity being "agent:a"
+    value caller_b is test_context with entity being "agent:b"
+    value store is open_store with scope being "work"
+    value claim is test_claim with nothing
+    expect (store.assert_claim with authority being authority, caller being caller_a,
+        grant_id being writer_a.grant_id, scope being "work", claim being claim, supports being yes,
+        source being "test:own", expected_revision being 0).code equals "ok"
+    expect (store.assert_claim with authority being authority, caller being caller_b,
+        grant_id being writer_b.grant_id, scope being "work", claim being claim, supports being no,
+        source being "test:other", expected_revision being 1).code equals "ok"
+    expect (store.withdraw with authority being authority, caller being caller_a,
+        grant_id being withdrawer.grant_id, scope being "work", evidence_id being 1,
+        expected_revision being 2).code equals "ok"
+    expect (store.withdraw with authority being authority, caller being caller_b,
+        grant_id being writer_b.grant_id, scope being "work", evidence_id being 2,
+        expected_revision being 3).code equals "ok"
+    !!! Withdraw-own does not authorize forgetting either holder's history.
+    value denied is store.compact with authority being authority, caller being caller_a,
+        grant_id being withdrawer.grant_id, scope being "work"
+    expect denied.code equals "denied"
+    expect denied.revision equals 0
+    expect denied.evidence_id equals 0
+    expect denied.event_id equals 0
+    expect (store.retained_count with nothing) equals 4
+    expect store.retained_from equals 0
+    value historical is store.resolve with authority being authority, caller being caller_b,
+        grant_id being writer_b.grant_id, scope being "work", claim being claim, as_of being 2,
+        max_work being 128, max_evidence being 128
+    expect historical.state equals "contested"
+    expect historical.complete
+    value limited is authority.install with entity being "maintainer", session being 1, scope being "work",
+        operations being 16, expires being 100, work_limit being 3, result_limit being 1, tick being 1
+    value maintainer is test_context with entity being "maintainer"
+    expect (store.compact with authority being authority, caller being maintainer,
+        grant_id being limited.grant_id, scope being "work").code equals "limit"
+    expect (store.retained_count with nothing) equals 4
+    expect store.retained_from equals 0
+    value maintenance is authority.install with entity being "maintainer", session being 1, scope being "work",
+        operations being 16, expires being 100, work_limit being 128, result_limit being 1, tick being 1
+    expect maintenance.code equals "ok"
+    expect (store.compact with authority being authority, caller being maintainer,
+        grant_id being maintenance.grant_id, scope being "other").code equals "denied"
+    value reclaimed is store.compact with authority being authority, caller being maintainer,
+        grant_id being maintenance.grant_id, scope being "work"
+    expect reclaimed.code equals "ok"
+    expect reclaimed.evidence_id equals 4
+    expect reclaimed.revision equals 4
+    expect reclaimed.event_id equals 4
+    expect (store.retained_count with nothing) equals 0
+    !!! A revoked maintenance grant cannot compact even an empty store.
+    expect (authority.revoke with caller being maintainer, grant_id being maintenance.grant_id).code equals "ok"
+    expect (store.compact with authority being authority, caller being maintainer,
+        grant_id being maintenance.grant_id, scope being "work").code equals "denied"
 end test

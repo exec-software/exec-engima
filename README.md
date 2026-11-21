@@ -20,11 +20,14 @@ appends an event; earlier snapshots keep their original meaning.
   A budget-exhausted scan reports `incomplete`.
 - Use scoped, session-bound grants with operation, expiry, and work/output
   limits; delegation can only narrow authority and ancestor revocation stays live.
+- Reclaim withdrawn evidence under a separate scope-wide compaction permission;
+  reads of history below the retention horizon report `incomplete`.
 - Interact through a typed Matrix companion library in
   [`ext/enigma-client`](ext/enigma-client/README.md), outside `nil.std`.
-- Preserve evidence, permission definitions, ancestry, revocations, ID counters,
+- Preserve retained evidence, grant ancestry and revocations, issued counters,
   and the logical clock floor in one validated checkpoint. Recovery retires all
-  prior session grants before serving requests.
+  prior session grants, reclaims their rows, and retains the retirement mark
+  before serving requests.
 
 This first slice tests a useful direction rather than committing to SQL or
 document-store architecture. [ENI-0001](docs/design/ENI-0001-evidence-and-authority.md)
@@ -99,8 +102,9 @@ also syncs the parent directory. Matrix owns the codec, state validation, and
 recovery decisions; the host supplies missing filesystem primitives.
 
 `serve` commits a fresh incarnation and retires **all** prior session grants
-before returning `ready`. Permission definitions and revocation history remain,
-but callers require explicit re-admission and newly installed grants. Saved
+before returning `ready`. Retired grant rows are reclaimed; issued counters and
+a retirement high-water mark remain. Callers require explicit re-admission and
+newly installed grants. Saved
 old-incarnation requests cannot restore authority. Missing or corrupt state
 fails closed; there is no automatic initialization or older-checkpoint fallback.
 

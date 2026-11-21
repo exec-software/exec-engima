@@ -16,8 +16,15 @@ public surface_info begin record
     field requires_trusted_host as boolean
 end record
 
+public compaction_receipt begin record
+    field code as text
+    field revision as number
+    field reclaimed as number
+    field retained_from as number
+end record
+
 public describe_surface returns surface_info begin paragraph
-    give build surface_info with protocol being "enigma.evidence.v1", model being "evidence", operations being ["support", "oppose", "resolve", "inspect", "withdraw"], max_events being 128, max_text_units being 256, max_scope_units being 128, latest_revision_sentinel being minus 1, supports_persistence being no, requires_trusted_host being yes
+    give build surface_info with protocol being "enigma.evidence.v1", model being "evidence", operations being ["support", "oppose", "resolve", "inspect", "withdraw", "compact"], max_events being 128, max_text_units being 256, max_scope_units being 128, latest_revision_sentinel being minus 1, supports_persistence being no, requires_trusted_host being yes
 end paragraph
 
 !!! The host supplies authority and context. This package never mints grants.
@@ -39,6 +46,13 @@ public evidence_client begin class
 
     public withdraw receives evidence_id as number, expected_revision as number returns write_receipt begin paragraph
         give my host_store.withdraw with authority being my host_authority, caller being my host_context, grant_id being my grant_id, scope being my scope, evidence_id being evidence_id, expected_revision being expected_revision
+    end paragraph
+
+    public compact returns compaction_receipt begin paragraph
+        value reclaimed is my host_store.compact with authority being my host_authority,
+            caller being my host_context, grant_id being my grant_id, scope being my scope
+        give build compaction_receipt with code being reclaimed.code, revision being reclaimed.revision,
+            reclaimed being reclaimed.evidence_id, retained_from being reclaimed.event_id
     end paragraph
 
     public resolve receives claim as proposition, as_of as number, max_work as number, max_evidence as number returns resolution begin paragraph
@@ -75,7 +89,8 @@ describes_typed_surface_and_current_limits begin test
     value surface is describe_surface with nothing
     expect surface.protocol equals "enigma.evidence.v1"
     expect surface.model equals "evidence"
-    expect (the length of surface.operations) equals 5
+    expect (the length of surface.operations) equals 6
+    expect (surface.operations at 5) equals "compact"
     expect surface.max_events equals 128
     expect surface.max_text_units equals 256
     expect surface.max_scope_units equals 128
@@ -85,6 +100,50 @@ describes_typed_surface_and_current_limits begin test
     set surface.operations at 0 to "changed"
     value fresh_surface is describe_surface with nothing
     expect (fresh_surface.operations at 0) equals "support"
+end test
+
+note suite "enigma.client"
+withdrawal_authority_cannot_forget_history begin test
+    value adapter is fixture_client with operations being 7
+    value claim is fixture_proposition with nothing
+    value written is adapter.support with claim being claim, source being "fixture:history", expected_revision being 0
+    expect written.code equals "ok"
+    expect (adapter.withdraw with evidence_id being written.evidence_id,
+        expected_revision being written.revision).code equals "ok"
+    value denied is adapter.compact with nothing
+    expect denied.code equals "denied"
+    expect denied.reclaimed equals 0
+    expect denied.retained_from equals 0
+    value historical is adapter.resolve with claim being claim, as_of being written.revision,
+        max_work being 128, max_evidence being 128
+    expect historical.state equals "supported"
+    expect historical.complete
+end test
+
+note suite "enigma.client"
+explicit_compaction_reports_reclaimed_count_and_historical_horizon begin test
+    !!! Scope maintenance is an explicit additional right (16), distinct from
+    !!! the ability to withdraw one's own evidence (4).
+    value adapter is fixture_client with operations being 23
+    value claim is fixture_proposition with nothing
+    value written is adapter.support with claim being claim, source being "fixture:retracted", expected_revision being 0
+    expect written.code equals "ok"
+    value withdrawn is adapter.withdraw with evidence_id being written.evidence_id,
+        expected_revision being written.revision
+    expect withdrawn.code equals "ok"
+    value reclaimed is adapter.compact with nothing
+    expect reclaimed.code equals "ok"
+    expect reclaimed.revision equals withdrawn.revision
+    expect reclaimed.reclaimed equals 2
+    expect reclaimed.retained_from equals withdrawn.revision
+    value historical is adapter.resolve with claim being claim, as_of being written.revision,
+        max_work being 128, max_evidence being 128
+    expect historical.state equals "incomplete"
+    expect not historical.complete
+    value latest is adapter.resolve with claim being claim, as_of being minus 1,
+        max_work being 128, max_evidence being 128
+    expect latest.state equals "unknown"
+    expect latest.complete
 end test
 
 note suite "enigma.client"

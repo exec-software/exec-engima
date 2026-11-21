@@ -13,7 +13,7 @@ semantics by convention.
 
 The companion [Matrix client](../../ext/enigma-client/README.md) lives under
 `ext/enigma-client`, outside the framework's core standard library. It exposes
-`support`, `oppose`, `resolve`, `inspect`, and `withdraw`, plus a discoverable
+`support`, `oppose`, `resolve`, `inspect`, `withdraw`, and `compact`, plus a discoverable
 surface descriptor. Requests pass typed propositions and explicit parameters;
 agents do not need to synthesize query strings.
 
@@ -33,6 +33,18 @@ Withdrawals append a correction event and preserve prior snapshots. Withdrawal
 and inspection also check grant work limits and can return `limit` without
 returning evidence. See [ENI-0001](ENI-0001-evidence-and-authority.md) for the
 complete operation and authority contract.
+
+Compaction explicitly reclaims an assertion together with its withdrawal,
+retaining unwithdrawn evidence and every issued identifier. Its receipt reports
+the reclaimed event count and the retained-history horizon. A resolve below that
+horizon reports `incomplete`, while revision `0` and views at or above the
+horizon remain exact when fully scanned. Inspection of a reclaimed assertion
+returns `not_found`. See [ENI-0005](ENI-0005-evidence-retention.md).
+
+This is scope-wide maintenance that can discard another holder's retracted
+history. It requires separate right `16`; withdraw-own right `4` alone does
+not authorize compaction. The client and any future text parser must preserve
+that distinction rather than infer maintenance authority from a write grant.
 
 ## Future Matrix-inspired text
 

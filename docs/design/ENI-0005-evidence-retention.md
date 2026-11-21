@@ -1,7 +1,7 @@
 # ENI-0005: Evidence retention without a wrong historical answer
 
 Status: implemented. Events carry their issued revision, `compact` reclaims
-matched pairs under withdrawal authority, a view below the horizon answers
+matched pairs under explicit scoped compaction authority (`16`), a view below the horizon answers
 `incomplete`, and the checkpoint schema is `enigma.state.v3`.
 
 ## The ceiling counts writes, not evidence
@@ -73,6 +73,14 @@ explaining what was known. So compaction is an operation a caller invokes under
 authority, and a store that is never compacted fills up and fails closed, which
 is the honest outcome.
 
+**Scope-wide deletion needs a separate permission.** Compaction reclaims pairs
+from every entity in the scope, so the existing withdraw-own right (`4`) cannot
+authorize it. The new compact right (`16`) grants only that maintenance effect;
+it implies neither reading evidence nor withdrawing another entity's assertion.
+It follows the same scope, expiry, work-limit, attenuation, and ancestor
+revocation checks as every other right. Existing masks through `15` retain
+their meaning and do not acquire this effect.
+
 ## What this does not do
 
 It does not raise the 128 ceiling. After this change the ceiling bounds
@@ -97,6 +105,10 @@ decided here.
 Events gain their issued revision, and the store gains the retention horizon.
 That is `enigma.state.v3`, refused rather than upgraded from v2, for the
 reasons ENI-0004 records.
+
+The decoder requires a consecutive retained tail above the horizon through the
+current revision. Gaps are possible only at or below the horizon; missing recent
+events are corrupt state, even if the envelope's checksum matches.
 
 ## Validation
 

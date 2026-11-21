@@ -36,7 +36,7 @@ valid_name receives input as text returns boolean begin paragraph
 end paragraph
 
 valid_bounds receives operations as number, work_limit as number, result_limit as number returns boolean begin paragraph
-    give operations is greater than 0 and operations is at most 15 and
+    give operations is greater than 0 and operations is at most 31 and
         work_limit is greater than 0 and work_limit is at most 65536 and
         result_limit is greater than 0 and result_limit is at most 65536
 end paragraph
@@ -201,7 +201,8 @@ public authority_registry begin class
         when not (my bound_holder with caller being caller, grant_id being grant_id) then
             give denied_decision with nothing
         end when
-        when operation does not equal 1 and operation does not equal 2 and operation does not equal 4 and operation does not equal 8 then
+        when operation does not equal 1 and operation does not equal 2 and operation does not equal 4 and
+            operation does not equal 8 and operation does not equal 16 then
             give denied_decision with nothing
         end when
         value index is my index_of with grant_id being grant_id
@@ -362,7 +363,7 @@ permission_masks_and_resource_bounds_are_validated begin test
     value no_rights is registry.install with entity being "owner", session being 1, scope being "scope", operations being 0,
         expires being 100, work_limit being 20, result_limit being 5, tick being 0
     expect no_rights.code equals "invalid"
-    value unknown_rights is registry.install with entity being "owner", session being 1, scope being "scope", operations being 16,
+    value unknown_rights is registry.install with entity being "owner", session being 1, scope being "scope", operations being 32,
         expires being 100, work_limit being 20, result_limit being 5, tick being 0
     expect unknown_rights.code equals "invalid"
     value no_work is registry.install with entity being "owner", session being 1, scope being "scope", operations being 1,
@@ -384,7 +385,7 @@ permission_masks_and_resource_bounds_are_validated begin test
         grant_id being 1, scope being "scope", operation being 3
     expect multiple.code equals "denied"
     value unknown is registry.authorize with caller being (test_context with entity being "owner", session being 1, tick being 0),
-        grant_id being 1, scope being "scope", operation being 16
+        grant_id being 1, scope being "scope", operation being 32
     expect unknown.code equals "denied"
 end test
 
@@ -704,4 +705,43 @@ reclamation_keeps_the_live_ceiling_and_refuses_a_reclaimed_ancestor begin test
         parent_id being 1, entity being "agent", session being 2, operations being 1,
         expires being 50, work_limit being 10, result_limit being 2
     expect orphaned.code equals "denied"
+end test
+
+note suite "enigma.authority"
+compaction_authority_is_explicit_and_delegation_cannot_invent_it begin test
+    value registry is open_authority with nothing
+    value legacy is registry.install with entity being "writer", session being 1, scope being "scope",
+        operations being 15, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value writer is test_context with entity being "writer", session being 1, tick being 1
+    !!! The old complete operation mask does not silently gain maintenance.
+    expect (registry.authorize with caller being writer, grant_id being legacy.grant_id,
+        scope being "scope", operation being 16).code equals "denied"
+    expect (registry.delegate with caller being writer, parent_id being legacy.grant_id,
+        entity being "maintenance", session being 2, operations being 16, expires being 50,
+        work_limit being 128, result_limit being 128).code equals "denied"
+    value root is registry.install with entity being "owner", session being 3, scope being "scope",
+        operations being 24, expires being 100, work_limit being 128, result_limit being 128, tick being 1
+    expect root.code equals "ok"
+    value owner is test_context with entity being "owner", session being 3, tick being 1
+    value child is registry.delegate with caller being owner, parent_id being root.grant_id,
+        entity being "maintenance", session being 2, operations being 16, expires being 50,
+        work_limit being 64, result_limit being 1
+    expect child.code equals "ok"
+    value maintenance is test_context with entity being "maintenance", session being 2, tick being 1
+    value allowed is registry.authorize with caller being maintenance, grant_id being child.grant_id,
+        scope being "scope", operation being 16
+    expect allowed.code equals "ok"
+    expect allowed.work_limit equals 64
+    !!! Maintenance is not withdrawal, read, or grant-issuing authority.
+    expect (registry.authorize with caller being maintenance, grant_id being child.grant_id,
+        scope being "scope", operation being 4).code equals "denied"
+    expect (registry.authorize with caller being maintenance, grant_id being child.grant_id,
+        scope being "scope", operation being 1).code equals "denied"
+    expect (registry.delegate with caller being maintenance, parent_id being child.grant_id,
+        entity being "other", session being 4, operations being 16, expires being 40,
+        work_limit being 1, result_limit being 1).code equals "denied"
+    !!! Live ancestry still gates the new operation.
+    expect (registry.revoke with caller being owner, grant_id being root.grant_id).code equals "ok"
+    expect (registry.authorize with caller being maintenance, grant_id being child.grant_id,
+        scope being "scope", operation being 16).code equals "denied"
 end test

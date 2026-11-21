@@ -1,7 +1,8 @@
 # ENI-0004: Authority capacity across restarts
 
-Status: implemented. Identifiers are issued rather than positional, recovery
-reclaims the rows it retires, and the checkpoint schema is `enigma.state.v2`.
+Status: implemented. Identifiers are issued rather than positional and recovery
+reclaims the rows it retires. This introduced `enigma.state.v2`; evidence
+retention subsequently advances the schema to v3 in [ENI-0005](ENI-0005-evidence-retention.md).
 
 ## The problem is restarts, not data
 
@@ -76,17 +77,18 @@ and it is not needed for this defect. This costs two numbers of state and
 keeps the engine able to say *why* a grant is refused, which matters more here
 than in a database that only has to produce the right denial.
 
-After this change the 256 ceiling bounds *live* grants, which is a steady-state
-limit, instead of bounding every grant a database will ever issue.
+After this change the 256 ceiling bounds retained grant rows rather than every
+grant a database will ever issue. Rows revoked during the current session still
+occupy capacity until recovery retires and reclaims the whole registry.
 
 ## What this does not do
 
 It does not bound the evidence log, which is a separate ceiling of 128 events
 with its own retention question, and not this record's subject.
 
-It does not make an exhausted registry recoverable. A database with 256
-simultaneously live grants still fails closed, and should: that is a real
-capacity limit rather than an accounting artifact.
+It does not raise the in-session ceiling. A registry with 256 retained rows
+still refuses another grant. Recovery reclaims those rows, requiring fresh
+admission for all callers; no operation silently evicts a grant to admit another.
 
 It does not survive an operator rollback. `next_grant_id` lives in the
 checkpoint, so restoring a file written before an identifier was issued
