@@ -1,5 +1,51 @@
 # Development validation
 
+## Application record storage — 2026-11-21
+
+The source revision is
+[`942c47a`](https://github.com/exec-software/exec-enigma/commit/942c47acace097d4c4b285c2b0ed8afe2210b1ef).
+The complete Linux x86_64 development SDK is built from clean NIL source
+[`dbb4379`](https://github.com/exec-software/exec-nil-framework/commit/dbb4379946f6800a79e485dcd890e8f5b0902b31),
+generation `936298a9c20142f2634744a0154ee32d7e5807cc1f3f743d08059fab61f0b7bf`.
+
+```sh
+./scripts/test-records.sh
+./scripts/test.sh
+./scripts/test-durable-client.sh
+./scripts/test-matrix-host.sh
+```
+
+- The record runner passes 22 Matrix executions and five external filesystem
+  methods on both VM and native. The synthetic package example also passes
+  separate-process create and reopen on both routes.
+- The evidence runner passes 176 Matrix executions, 24 CLI checks, the two
+  volatile examples, and 40 existing Python methods.
+- The durable evidence client runner passes 46 Matrix executions and nine
+  external methods on both routes. The session and fault contracts pass
+  against Matrix VM, Matrix native, and Python hosts, including both
+  checkpoint interoperability directions.
+
+The record oracle checks exact 4 MiB UTF-8 bodies with embedded NUL and
+independently compares persisted and exported bytes and SHA-256 digests.
+A seeded 1,025-key manifest recovers, refuses a short scan without a prefix,
+enumerates all keys in order, and durably accepts key 1,026. The index suite
+also checks the 2,048-key ceiling and the independent encoded byte ceiling.
+Tests cover missing versus empty, version preconditions, byte grant
+attenuation, durable clock advancement, recovery retirement, and no version
+advance on refusal.
+
+External filesystem failures distinguish a known absence of logical
+publication from an uncertain manifest outcome. An affected owner refuses
+further dispatch. Missing, unsafe, or corrupt referenced files and malformed
+manifests block opening. An active read detects modified body bytes and
+poisons its owner. These cases exercise real processes and files on Linux.
+
+The tests qualify the record profile on the pinned Enigma development SDK.
+The combined Goetic SDK, consumer adapter, and live import have their own
+qualification. The format stores plaintext bodies and retains unreferenced
+files after replacement or interrupted writes. See
+[ENI-0009](design/ENI-0009-application-records.md).
+
 ## Bounded checkpoint capacity — 2026-11-21
 
 Engine source is
@@ -54,8 +100,8 @@ local documentation links, and `git diff --check` pass.
 This qualifies the bounded checkpoint profile in
 [ENI-0008](design/ENI-0008-bounded-capacity.md), not document storage, scalable
 query latency, release SDKs, encryption, native admission, general rollback
-protection, or hardware power-cut behavior. The application-record profile in
-[ENI-0009](design/ENI-0009-application-records.md) remains proposed and unimplemented.
+protection, or hardware power-cut behavior. The application record profile in
+[ENI-0009](design/ENI-0009-application-records.md) was proposed at that point.
 
 ## Durable application integration — 2026-11-20
 
