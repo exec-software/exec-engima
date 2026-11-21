@@ -25,6 +25,8 @@ log the same treatment, reclaiming retracted evidence on request.
 adds exact-or-any patterns over active reports without requiring a known triple.
 [ENI-0007: Durable application sessions](ENI-0007-application-sessions.md)
 defines importable ownership, typed durable calls, and uncertain-failure handling.
+[ENI-0008: Bounded checkpoint capacity](ENI-0008-bounded-capacity.md)
+separates retained events, read work, reply bounds, and durable byte admission.
 
 | Area | Current behavior |
 | --- | --- |
@@ -32,7 +34,7 @@ defines importable ownership, typed durable calls, and uncertain-failure handlin
 | Discovery | Exact-or-any selectors return active reports with provenance, a pinned snapshot, and separate scan/output completeness. |
 | History | Assertions and withdrawals append events; as-of reads preserve prior views. |
 | Resolution | `unknown`, `supported`, `contradicted`, or `contested` after a complete scan; `incomplete` when work runs out. |
-| Bounds | 128 retained events per store, explicit work/output limits, and separate evidence-list completeness. An invoked compaction reclaims retracted evidence; a view below the resulting horizon answers `incomplete`. |
+| Bounds | 1,024 retained events per store, 1,023 assertion admission, work through 1,024 events, 128-item replies, and separate durable byte budgets. An invoked compaction reclaims retracted evidence; a view below the resulting horizon answers `incomplete`. |
 | Authority | Trusted-host entity/session grants with exact audience, scope, rights, logical expiry, attenuation, and live ancestor revocation. |
 | Client | Typed operations and a discoverable surface under [`ext/enigma-client`](../../ext/enigma-client/README.md), outside `nil.std`. |
 | Persistence | Matrix checkpoint codec and validated recovery, with POSIX host locking, private files, atomic replacement, and sync-before-receipt ordering. |

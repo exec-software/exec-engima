@@ -5,6 +5,10 @@ Status: implementation contract for the first in-memory slice.
 This remains the direct embedded API contract. The separate durable host and
 its stronger restart rules are defined in [ENI-0002](ENI-0002-durable-state-and-recovery.md).
 
+The initial numerical bounds recorded here are superseded by
+[ENI-0008](ENI-0008-bounded-capacity.md): 1,024 retained events, 1,023 assertion
+admission, work through 1,024 events, and 128-item replies.
+
 ## Why this model
 
 An agent often needs to retain competing reports, explain an answer, and revisit

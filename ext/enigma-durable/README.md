@@ -79,6 +79,11 @@ have occurred. The client never retries, grants authority, or repairs a request.
 Use expected revisions and inspect recovered state after an uncertain result.
 There is no durable idempotency ledger in this version.
 
+A confirmed `capacity` reply is an ordinary domain refusal. It leaves the
+attempted evidence or grant mutation absent, preserves the observed permission
+clock floor and next commit generation, and keeps the owner usable. It does
+not authorize compaction or automatically retry the write.
+
 ## Typed operations
 
 | Method | Inputs after `caller` | Typed receipt |
@@ -96,6 +101,11 @@ Selectors, revision zero/latest, evidence states, provenance, retention, and
 budget completeness have the same semantics as the engine. Scope-wide
 compaction requires explicit right `16`; withdrawal alone does not authorize it.
 Discovery returns the bounded report batch with `count` and checked `get`.
+Work budgets range from 1 through 1,024; returned evidence remains capped at
+128 items. Stores retain at most 1,024 events, with assertion admission stopping
+at 1,023 to reserve a withdrawal slot. Durable event and grant byte budgets can
+fill before their row ceilings; see
+[ENI-0008](../../docs/design/ENI-0008-bounded-capacity.md).
 
 ## Lifetime and integration boundary
 

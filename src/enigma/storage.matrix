@@ -3,7 +3,7 @@ book enigma.storage
 read everything from nil.std.nildata
 read everything from nil.std.core.option
 read substring from nil.std.text
-read durable_state, new_state, decode_state, encode_state, exact_object,
+read durable_state, new_state, decode_state, encode_state, encode_candidate, exact_object,
     field_value, field_text, field_number from enigma.persistence
 read access_context from enigma.authority
 read proposition, evidence_item from enigma.ledger
@@ -492,7 +492,29 @@ public stage_request_typed receives input as text returns staging_result begin p
     end when
     set snapshot.generation to snapshot.generation plus 1
     value receipt is dispatch with snapshot being snapshot, request being request
-    value encoded is encode_state with snapshot being snapshot
+    variable admission_operation as text is ""
+    when (get_text with node being receipt, key being "code") equals "ok" then
+        set admission_operation to get_text with node being request, key being "op"
+    end when
+    value encoded is encode_candidate with snapshot being snapshot, operation being admission_operation
+    when encoded.code equals "capacity" or encoded.code equals "state_too_large" then
+        !!! A legal operation can exhaust byte capacity. Discard its evidence,
+        !!! grant, and identifier effects, but never roll back observed logical
+        !!! time. The refusal is itself a committed security transition.
+        value restored is decode_state with payload being payload
+        when restored.code does not equal "ok" then
+            give failed_packet with code being "corrupt"
+        end when
+        value previous is restored.state
+        set previous.generation to snapshot.generation
+        set previous.authority.clock_floor to snapshot.authority.clock_floor
+        value rollback is encode_state with snapshot being previous
+        when rollback.code does not equal "ok" then
+            give failed_packet with code being "corrupt"
+        end when
+        give packet with code being "ok", payload being rollback.payload,
+            receipt being (base_receipt with code being "capacity")
+    end when
     when encoded.code does not equal "ok" then
         give failed_packet with code being "corrupt"
     end when
@@ -684,4 +706,59 @@ transport_frame_may_exceed_a_document_but_never_exceeds_its_bound begin test
     expect exact_object with node being failure, keys being failure_keys
     expect (get_text with node being failure, key being "instance") equals ""
     expect (get_number with node being failure, key being "generation") equals 0
+end test
+
+note suite "enigma.storage.worker"
+byte_capacity_reclaims_the_trial_grant_but_keeps_observed_time begin test
+    !!! A legacy v3 grant table can exceed the new admission budget. It remains
+    !!! decodable, revocable, and recoverable; it cannot grow further.
+    value snapshot is new_state with database_id being "test-database", incarnation being "before-recovery", scope being "work"
+    set snapshot.generation to 9
+    variable actor as text is ""
+    repeat for unit from 0 to 128
+        set actor to actor plus quote
+    end repeat
+    repeat for index from 0 to 200
+        value installed is snapshot.authority.install with entity being actor, session being 1, scope being "work",
+            operations being 15, expires being 1000, work_limit being 1024, result_limit being 128, tick being 9
+        expect installed.code equals "ok"
+    end repeat
+    value encoded is encode_state with snapshot being snapshot
+    expect encoded.code equals "ok"
+    expect (encode_candidate with snapshot being snapshot, operation being "install").code equals "capacity"
+    expect (encode_candidate with snapshot being snapshot, operation being "delegate").code equals "capacity"
+    variable request is empty_object with nothing
+    set request to put_text with node being request, key being "op", input being "install"
+    set request to put_text with node being request, key being "instance", input being "before-recovery"
+    set request to put_text with node being request, key being "entity", input being "agent:new"
+    set request to put_number with node being request, key being "session", input being 2
+    set request to put_number with node being request, key being "operations", input being 1
+    set request to put_number with node being request, key being "expires", input being 1000
+    set request to put_number with node being request, key being "work_limit", input being 1024
+    set request to put_number with node being request, key being "result_limit", input being 128
+    set request to put_number with node being request, key being "tick", input being 10
+    value input is test_envelope with mode being "apply", payload being encoded.payload, incarnation being "before-recovery", request being request
+    value staged is stage_request_typed with input being input
+    expect staged.code equals "ok"
+    expect (get_text with node being staged.receipt, key being "code") equals "capacity"
+    expect (get_text with node being staged.receipt, key being "instance") equals ""
+    expect (get_number with node being staged.receipt, key being "generation") equals 0
+    value restored is decode_state with payload being staged.payload
+    expect restored.code equals "ok"
+    expect restored.state.generation equals 10
+    expect restored.state.authority.clock_floor equals 10
+    expect restored.state.authority.grant_count equals 200
+    expect restored.state.authority.next_grant_id equals 201
+    expect restored.state.store.revision_value equals 0
+    value caller is build access_context with entity being actor, session being 1, audience being "enigma", tick being 11
+    expect (restored.state.authority.revoke with caller being caller, grant_id being 1).code equals "ok"
+    expect (encode_candidate with snapshot being restored.state, operation being "revoke").code equals "ok"
+    value recovery is test_envelope with mode being "recover", payload being staged.payload, incarnation being "new-incarnation",
+        request being (empty_object with nothing)
+    value recovered is stage_request_typed with input being recovery
+    expect recovered.code equals "ok"
+    value reopened is decode_state with payload being recovered.payload
+    expect reopened.state.authority.grant_count equals 0
+    expect reopened.state.authority.retired_through equals 200
+    expect reopened.state.authority.clock_floor equals 10
 end test

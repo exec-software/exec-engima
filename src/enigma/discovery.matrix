@@ -71,7 +71,7 @@ public discover receives store as evidence_store, authority as authority_registr
     when not (valid_selector with selector being pattern.subject) or
         not (valid_selector with selector being pattern.relation) or
         not (valid_selector with selector being pattern.object_value) or
-        as_of is less than minus 1 or max_work is less than 1 or max_work is greater than 128 or
+        as_of is less than minus 1 or max_work is less than 1 or max_work is greater than 1024 or
         max_evidence is less than 1 or max_evidence is greater than 128 then
         give failed_discovery with code being "invalid"
     end when
@@ -341,7 +341,7 @@ invalid_selectors_and_request_bounds_return_empty_results begin test
     evaluate expect_blank with result being (read_fixture with store being store, authority being authority,
         pattern being pattern, as_of being 5, max_work being 0, max_evidence being 128), code being "invalid"
     evaluate expect_blank with result being (read_fixture with store being store, authority being authority,
-        pattern being pattern, as_of being 5, max_work being 129, max_evidence being 128), code being "invalid"
+        pattern being pattern, as_of being 5, max_work being 1025, max_evidence being 128), code being "invalid"
     evaluate expect_blank with result being (read_fixture with store being store, authority being authority,
         pattern being pattern, as_of being 5, max_work being 128, max_evidence being 0), code being "invalid"
     evaluate expect_blank with result being (read_fixture with store being store, authority being authority,
@@ -440,6 +440,52 @@ compaction_horizons_keep_missing_history_incomplete_without_renumbering begin te
     expect advanced.revision equals 6
     expect advanced.matched equals 4
     expect ((advanced.items.get with index being 0).unwrap with nothing).id equals 6
+end test
+
+note suite "enigma.discovery"
+larger_scans_keep_the_output_and_grant_limits_separate begin test
+    value authority is open_authority with nothing
+    value issued is authority.install with entity being "agent:a", session being 11, scope being "work",
+        operations being 3, expires being 100, work_limit being 1024, result_limit being 128, tick being 0
+    value narrow is authority.install with entity being "agent:a", session being 11, scope being "work",
+        operations being 1, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value caller is fixture_caller with entity being "agent:a", session being 11
+    value store is open_store with scope being "work"
+    value claim is build proposition with subject being "application:subject", relation being "reports", object_value being "ready"
+    repeat for index from 0 to 129
+        expect (store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+            scope being "work", claim being claim, supports being yes, source being "fixture:large",
+            expected_revision being index).code equals "ok"
+    end repeat
+    value pattern is any_pattern with nothing
+    value complete is discover with store being store, authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", pattern being pattern, as_of being minus 1,
+        max_work being 1024, max_evidence being 128
+    expect complete.code equals "ok"
+    expect complete.complete
+    expect complete.inspected equals 129
+    expect complete.matched equals 129
+    expect not complete.evidence_complete
+    expect (complete.items.count with nothing) equals 128
+    expect ((complete.items.get with index being 0).unwrap with nothing).id equals 129
+    expect ((complete.items.get with index being 127).unwrap with nothing).id equals 2
+    expect (complete.items.get with index being 128).is_none with nothing
+    value partial is discover with store being store, authority being authority, caller being caller,
+        grant_id being narrow.grant_id, scope being "work", pattern being pattern, as_of being minus 1,
+        max_work being 128, max_evidence being 128
+    expect partial.code equals "ok"
+    expect not partial.complete
+    expect partial.inspected equals 128
+    expect partial.matched equals 128
+    expect not partial.evidence_complete
+    evaluate expect_blank with result being (discover with store being store, authority being authority, caller being caller,
+        grant_id being narrow.grant_id, scope being "work", pattern being pattern, as_of being minus 1,
+        max_work being 129, max_evidence being 128), code being "denied"
+    value extended is discover with store being store, authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", pattern being pattern, as_of being minus 1,
+        max_work being 129, max_evidence being 128
+    expect extended.complete
+    expect extended.matched equals 129
 end test
 
 note suite "enigma.discovery"

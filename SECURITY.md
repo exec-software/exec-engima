@@ -128,7 +128,8 @@ and then claim that old authority has been recovered safely.
   in that scope. Selectors are exact text or explicit any values; text never
   creates an operator. Partial counts are lower bounds, and an empty partial
   list does not establish absence. Current authority applies to every snapshot.
-- Each store holds at most 128 retained events; a caller with explicit scoped
+- Each store holds at most 1,024 retained events, with assertions limited to
+  1,023 to reserve one withdrawal slot; a caller with explicit scoped
   compaction authority (`16`) may compact retracted evidence. Withdrawal of
   one's own assertions (`4`) does not authorize deletion of scope-wide history.
   After compaction a historical read
@@ -139,6 +140,14 @@ and then claim that old authority has been recovered safely.
   rows, including grants revoked in the current session; recovery retires and
   reclaims every row while preserving issued counters and the retirement mark.
   Identifiers are never recycled within a checkpoint lineage.
+- Resolve and discovery accept work budgets through 1,024 events; returned
+  evidence lists remain capped at 128 items. Durable admission bounds the
+  encoded event array at 384 KiB, reserving 2 KiB from assertions for
+  withdrawal, and the encoded grant array at 64 KiB. Byte exhaustion returns
+  confirmed `capacity`, discarding the refused mutation while preserving the
+  observed clock floor and commit generation. Recovery and revocation retain
+  their existing authority rules. See
+  [ENI-0008](docs/design/ENI-0008-bounded-capacity.md).
 - Resolve meters inspected log events. Withdrawal, compaction, and inspection return
   `limit` when their required scan exceeds the grant's work limit. Event budgets
   are not CPU-time quotas: bounded withdrawal checks add work within a scan.

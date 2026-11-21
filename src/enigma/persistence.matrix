@@ -233,7 +233,7 @@ valid_state receives snapshot as durable_state returns boolean begin paragraph
     !!! has to stay ahead of it and above the horizon.
     value revision is store.revision_value
     value held is the length of store.event_ids
-    when held is less than 0 or held is greater than 128 or revision is less than held or
+    when held is less than 0 or held is greater than 1024 or revision is less than held or
         store.retained_from is less than 0 or store.retained_from is greater than revision then
         give no
     end when
@@ -364,7 +364,7 @@ public decode_state receives payload as text returns state_result begin paragrap
     value grant_count is reader.array_length with node being grants
     value events is field_value with node being root, key being "events"
     value event_count is reader.array_length with node being events
-    when not reader.valid or grant_count is greater than 256 or event_count is greater than 128 then
+    when not reader.valid or grant_count is greater than 256 or event_count is greater than 1024 then
         give corrupt_state with nothing
     end when
     variable grant_keys as array of text is ["id", "entity", "session", "scope", "rights", "expires", "work_limit", "result_limit", "parent", "revoked"]
@@ -476,7 +476,10 @@ state_writer begin class
     end paragraph
 end class
 
-public encode_state receives snapshot as durable_state returns encoding_result begin paragraph
+!!! Admission budgets partition the payload, leaving room for security metadata,
+!!! nested transport escaping, recovery, and fresh host admission. The codec itself
+!!! still accepts legacy v3 states up to its existing hard payload bound.
+encode_with_admission receives snapshot as durable_state, operation as text returns encoding_result begin paragraph
     when not (valid_state with snapshot being snapshot) then
         give build encoding_result with code being "corrupt", payload being ""
     end when
@@ -507,6 +510,15 @@ public encode_state receives snapshot as durable_state returns encoding_result b
         set row to writer.set_boolean with node being row, key being "revoked", flag being snapshot.authority.revoked at index
         set grants to writer.append_node with node being grants, item being row
     end repeat
+    when operation equals "install" or operation equals "delegate" then
+        value grant_json is to_json with grants
+        when grant_json.is_error with nothing then
+            give build encoding_result with code being "corrupt", payload being ""
+        end when
+        when (the length of (grant_json.unwrap with nothing)) is greater than 65536 then
+            give build encoding_result with code being "capacity", payload being ""
+        end when
+    end when
     set root to writer.set_node with node being root, key being "grants", replacement being grants
     variable events is (new_array with nothing).unwrap with nothing
     repeat for index from 0 to (the length of snapshot.store.event_ids)
@@ -523,6 +535,19 @@ public encode_state receives snapshot as durable_state returns encoding_result b
         set row to writer.set_number with node being row, key being "target", amount being snapshot.store.targets at index
         set events to writer.append_node with node being events, item being row
     end repeat
+    when operation equals "support" or operation equals "oppose" or operation equals "withdraw" then
+        value event_json is to_json with events
+        when event_json.is_error with nothing then
+            give build encoding_result with code being "corrupt", payload being ""
+        end when
+        variable event_limit as number is 393216
+        when operation equals "support" or operation equals "oppose" then
+            set event_limit to 391168
+        end when
+        when (the length of (event_json.unwrap with nothing)) is greater than event_limit then
+            give build encoding_result with code being "capacity", payload being ""
+        end when
+    end when
     set root to writer.set_node with node being root, key being "events", replacement being events
     when not writer.valid then
         give build encoding_result with code being "corrupt", payload being ""
@@ -532,10 +557,39 @@ public encode_state receives snapshot as durable_state returns encoding_result b
         give build encoding_result with code being "corrupt", payload being ""
     end when
     value payload is serialized.unwrap with nothing
+    when operation equals "support" or operation equals "oppose" or operation equals "withdraw" or
+        operation equals "install" or operation equals "delegate" then
+        !!! Legacy v3 tables may exceed a new partition. Measure the actual
+        !!! nested JSON spelling instead of refusing harmless fresh admission
+        !!! based only on a worst-case doubling estimate. Reserve 64 KiB for
+        !!! the next request and 8 KiB for framing/security metadata.
+        when (the length of payload) is greater than 522240 then
+            give build encoding_result with code being "capacity", payload being ""
+        end when
+        value nested_payload is string_value with payload
+        when nested_payload.is_error with nothing then
+            give build encoding_result with code being "corrupt", payload being ""
+        end when
+        value nested_json is to_json with (nested_payload.unwrap with nothing)
+        when nested_json.is_error with nothing then
+            give build encoding_result with code being "capacity", payload being ""
+        end when
+        when (the length of (nested_json.unwrap with nothing)) is greater than 974848 then
+            give build encoding_result with code being "capacity", payload being ""
+        end when
+    end when
     when (the length of payload) is greater than 524288 then
         give build encoding_result with code being "state_too_large", payload being ""
     end when
     give build encoding_result with code being "ok", payload being payload
+end paragraph
+
+public encode_state receives snapshot as durable_state returns encoding_result begin paragraph
+    give encode_with_admission with snapshot being snapshot, operation being ""
+end paragraph
+
+public encode_candidate receives snapshot as durable_state, operation as text returns encoding_result begin paragraph
+    give encode_with_admission with snapshot being snapshot, operation being operation
 end paragraph
 
 note if_test_mode
@@ -1077,4 +1131,77 @@ an_envelope_escapes_a_raw_control_character begin test
     value built is build_envelope with payload being payload, digest being (simple_digest with nothing)
     expect built.code equals "ok"
     expect not (contains with s being built.content, needle being newline)
+end test
+
+note suite "enigma.storage.codec"
+full_withdrawal_history_round_trips_and_compacts_without_reissuing_ids begin test
+    value snapshot is new_state with database_id being "database:withdrawal-capacity",
+        incarnation being "incarnation:withdrawal-capacity", scope being "work"
+    value issued is snapshot.authority.install with entity being "agent:writer", session being 1, scope being "work",
+        operations being 31, expires being 1000, work_limit being 1024, result_limit being 128, tick being 0
+    expect issued.code equals "ok"
+    value caller is build access_context with entity being "agent:writer", session being 1, audience being "enigma", tick being 1
+    value claim is build proposition with subject being "application:sample", relation being "reports", object_value being "ready"
+    repeat for index from 0 to 512
+        value added is snapshot.store.assert_claim with authority being snapshot.authority, caller being caller,
+            grant_id being issued.grant_id, scope being "work", claim being claim, supports being yes,
+            source being "synthetic:capacity", expected_revision being index
+        expect added.code equals "ok"
+        expect added.evidence_id equals index plus 1
+    end repeat
+    repeat for index from 0 to 512
+        value withdrawn is snapshot.store.withdraw with authority being snapshot.authority, caller being caller,
+            grant_id being issued.grant_id, scope being "work", evidence_id being index plus 1,
+            expected_revision being 512 plus index
+        expect withdrawn.code equals "ok"
+        expect withdrawn.event_id equals 513 plus index
+    end repeat
+    expect (snapshot.store.retained_count with nothing) equals 1024
+    value encoded is encode_candidate with snapshot being snapshot, operation being "withdraw"
+    expect encoded.code equals "ok"
+    value root is (from_json with encoded.payload).unwrap with nothing
+    expect (field_text with node being root, key being "schema").unwrap with nothing equals "enigma.state.v3"
+    value decoded is decode_state with payload being encoded.payload
+    expect decoded.code equals "ok"
+    value restored is decoded.state
+    expect restored.store.revision_value equals 1024
+    expect restored.store.retained_from equals 0
+    expect (restored.store.retained_count with nothing) equals 1024
+    repeat for index from 0 to 1024
+        expect (restored.store.event_ids at index) equals index plus 1
+    end repeat
+    repeat for index from 0 to 512
+        expect (restored.store.event_kinds at index) equals 1
+        expect (restored.store.event_kinds at (index plus 512)) equals 2
+        expect (restored.store.targets at (index plus 512)) equals index plus 1
+    end repeat
+    value empty is restored.store.resolve with authority being restored.authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", claim being claim, as_of being minus 1,
+        max_work being 1024, max_evidence being 128
+    expect empty.code equals "ok"
+    expect empty.state equals "unknown"
+    expect empty.complete
+    expect empty.evidence_complete
+    expect empty.inspected equals 1024
+    expect empty.supporting equals 0
+    expect empty.opposing equals 0
+    expect (the length of empty.evidence_ids) equals 0
+    value compacted is restored.store.compact with authority being restored.authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work"
+    expect compacted.code equals "ok"
+    expect compacted.evidence_id equals 1024
+    expect compacted.revision equals 1024
+    expect compacted.event_id equals 1024
+    value compacted_payload is encode_state with snapshot being restored
+    expect compacted_payload.code equals "ok"
+    value reopened is decode_state with payload being compacted_payload.payload
+    expect reopened.code equals "ok"
+    expect reopened.state.store.revision_value equals 1024
+    expect reopened.state.store.retained_from equals 1024
+    expect (reopened.state.store.retained_count with nothing) equals 0
+    value next_assertion is reopened.state.store.assert_claim with authority being reopened.state.authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work", claim being claim, supports being yes,
+        source being "synthetic:after-compaction", expected_revision being 1024
+    expect next_assertion.code equals "ok"
+    expect next_assertion.evidence_id equals 1025
 end test

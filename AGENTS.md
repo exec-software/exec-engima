@@ -8,7 +8,8 @@ Enigma is a new database-engine seed written in Matrix. Read `README.md`,
 `docs/design/ENI-0004-authority-capacity.md`,
 `docs/design/ENI-0005-evidence-retention.md`,
 `docs/design/ENI-0006-bounded-evidence-discovery.md`,
-`docs/design/ENI-0007-application-sessions.md`, and `SECURITY.md` before
+`docs/design/ENI-0007-application-sessions.md`,
+`docs/design/ENI-0008-bounded-capacity.md`, and `SECURITY.md` before
 extending the engine.
 
 - Implement engine behavior in Matrix under `src/enigma/` with `.matrix` files.
@@ -47,3 +48,8 @@ extending the engine.
 - Durable application owners verify current runtime lock ownership on every
   dispatch, close explicitly, and poison on protocol/storage failure. Typed
   clients take fresh host context per call and never retry uncertain writes.
+
+- Keep retained/work limits separate from reply limits: 1,024 retained events,
+  1,023 assertion admission, 1,024 read work, and 128 returned evidence items.
+  Durable byte-capacity refusals preserve the observed security clock floor
+  and commit generation without retaining the refused operation's effects.

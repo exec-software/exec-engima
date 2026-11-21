@@ -101,11 +101,21 @@ directory changes do not redirect its pinned database path.
 ## Current application limits
 
 This is an early local POSIX integration for bounded workloads: one store scope,
-128 retained events, 256 retained grant rows, explicit work/output budgets,
-and a 512 KiB payload ceiling. Compaction requires explicit scope-wide
-permission and gives up historical explanations. Multiwriter storage, general
-transactions, migrations, backups, native admission, encryption, and network
-transport remain separate work. No release is qualified for sensitive or
+1,024 retained events, 256 retained grant rows, and a 512 KiB payload ceiling.
+Assertions stop at 1,023 retained events, leaving one slot for withdrawal.
+Read work ranges from 1 through 1,024, while returned evidence stays capped at
+128 items. A complete scan can therefore return a partial evidence list; there
+is no continuation cursor yet.
+
+Durable admission also budgets the encoded event array at 384 KiB, with 2 KiB
+reserved from assertions for withdrawal, and the encoded grant array at 64 KiB.
+Long or escape-heavy data can reach byte capacity before the row ceiling. A
+confirmed `capacity` response leaves the attempted evidence or grant change
+absent, preserves the observed permission clock floor, and keeps the owner
+usable. Compaction requires explicit scope-wide permission and gives up
+historical explanations. See [ENI-0008](design/ENI-0008-bounded-capacity.md).
+Multiwriter storage, general transactions, migrations, backups, native admission,
+encryption, and network transport remain separate work. No release is qualified for sensitive or
 production data yet.
 
 The [application session contract](design/ENI-0007-application-sessions.md) and

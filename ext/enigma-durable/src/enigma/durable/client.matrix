@@ -327,7 +327,7 @@ decode_compaction receives node as `Value` returns Result of compaction_receipt,
     value revision is reader.read_number with node being node, key being "revision"
     value reclaimed is reader.read_number with node being node, key being "reclaimed"
     value horizon is reader.read_number with node being node, key being "retained_from"
-    when not reader.valid or revision is less than 0 or reclaimed is less than 0 or reclaimed is greater than 128 or
+    when not reader.valid or revision is less than 0 or reclaimed is less than 0 or reclaimed is greater than 1024 or
         horizon is less than 0 or horizon is greater than revision then give Result.Error holding "protocol_error" end when
     give Result.Ok holding (build compaction_receipt with code being code, revision being revision, reclaimed being reclaimed, retained_from being horizon)
 end paragraph
@@ -445,7 +445,7 @@ decode_resolution receives node as `Value` returns Result of resolution, text be
     value supporting is reader.read_number with node being node, key being "supporting"
     value opposing is reader.read_number with node being node, key being "opposing"
     value ids is read_ids with reader being reader, node being (field_value with node being node, key being "evidence_ids"), revision being revision
-    when not reader.valid or revision is less than 0 or inspected is less than 0 or inspected is greater than 128 or
+    when not reader.valid or revision is less than 0 or inspected is less than 0 or inspected is greater than 1024 or
         supporting is less than 0 or opposing is less than 0 or supporting plus opposing is greater than inspected or
         evidence_complete does not equal (complete and (the length of ids) equals supporting plus opposing) then give Result.Error holding "protocol_error" end when
     variable expected as text is "incomplete"
@@ -507,7 +507,7 @@ decode_discovery receives node as `Value` returns discovery_decode begin paragra
             end when
         end when
     end repeat
-    when not reader.valid or revision is less than 0 or horizon is less than 0 or inspected is less than 0 or inspected is greater than 128 or
+    when not reader.valid or revision is less than 0 or horizon is less than 0 or inspected is less than 0 or inspected is greater than 1024 or
         matched is less than count or matched is greater than inspected or
         evidence_complete does not equal (complete and count equals matched) or
         (complete and revision does not equal 0 and revision is less than horizon) then give bad_discovery_decode with nothing end when
@@ -944,4 +944,54 @@ uniform_replies_separate_confirmation_from_failure_and_clear_metadata begin test
     expect confirmed_denial.receipt.code equals "denied"
     expect confirmed_denial.failure.code equals ""
     expect not confirmed_denial.failure.outcome_unknown
+end test
+
+
+note suite "enigma.durable.client"
+expanded_scan_counts_keep_the_reply_bound_independent begin test
+    value scan is success_fixture with nothing
+    evaluate scan.put_text with key being "state", input being "supported"
+    evaluate scan.put_number with key being "revision", input being 1024
+    evaluate scan.put with key being "complete", input being (boolean_value with yes).unwrap with nothing
+    evaluate scan.put with key being "evidence_complete", input being (boolean_value with no).unwrap with nothing
+    evaluate scan.put_number with key being "inspected", input being 1024
+    evaluate scan.put_number with key being "supporting", input being 1024
+    evaluate scan.put_number with key being "opposing", input being 0
+    value identifier is (integer_value with "1").unwrap with nothing
+    value ids is (array_append with (new_array with nothing).unwrap with nothing, identifier).unwrap with nothing
+    evaluate scan.put with key being "evidence_ids", input being ids
+    value resolved is decode_resolution with node being scan.node
+    expect not (resolved.is_error with nothing)
+    expect (resolved.unwrap with nothing).inspected equals 1024
+    expect not (resolved.unwrap with nothing).evidence_complete
+    variable oversized_ids is (new_array with nothing).unwrap with nothing
+    repeat for index from 0 to 129
+        value amount is 129 minus index
+        value item is (integer_value with formatted "{amount}").unwrap with nothing
+        set oversized_ids to (array_append with oversized_ids, item).unwrap with nothing
+    end repeat
+    evaluate scan.put with key being "evidence_ids", input being oversized_ids
+    expect (decode_resolution with node being scan.node).is_error with nothing
+    evaluate scan.put with key being "evidence_ids", input being ids
+    evaluate scan.put_number with key being "inspected", input being 1025
+    expect (decode_resolution with node being scan.node).is_error with nothing
+    value discovery is success_fixture with nothing
+    evaluate discovery.put_number with key being "revision", input being 1024
+    evaluate discovery.put_number with key being "retained_from", input being 0
+    evaluate discovery.put with key being "complete", input being (boolean_value with yes).unwrap with nothing
+    evaluate discovery.put with key being "evidence_complete", input being (boolean_value with no).unwrap with nothing
+    evaluate discovery.put_number with key being "inspected", input being 1024
+    evaluate discovery.put_number with key being "matched", input being 1024
+    value rows is (array_append with (new_array with nothing).unwrap with nothing, (fixture_evidence_json with nothing).node).unwrap with nothing
+    evaluate discovery.put with key being "items", input being rows
+    expect (decode_discovery with node being discovery.node).valid
+    evaluate discovery.put_number with key being "inspected", input being 1025
+    expect not (decode_discovery with node being discovery.node).valid
+    value compacted is success_fixture with nothing
+    evaluate compacted.put_number with key being "revision", input being 1024
+    evaluate compacted.put_number with key being "reclaimed", input being 1024
+    evaluate compacted.put_number with key being "retained_from", input being 1024
+    expect not ((decode_compaction with node being compacted.node).is_error with nothing)
+    evaluate compacted.put_number with key being "reclaimed", input being 1025
+    expect (decode_compaction with node being compacted.node).is_error with nothing
 end test

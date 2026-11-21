@@ -11,7 +11,10 @@ object
     item is "compact"
     item is "discover"
   end array
-  max_events is 128
+  max_events is 1024
+  max_assertion_events is 1023
+  max_work is 1024
+  max_evidence is 128
   max_text_units is 256
   max_scope_units is 128
   latest_revision_sentinel is -1

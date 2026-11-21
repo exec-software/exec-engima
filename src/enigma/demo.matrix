@@ -16,6 +16,9 @@ public show_surface returns nothing begin paragraph
     end repeat
     say "  end array"
     say formatted "  max_events is {surface.max_events}"
+    say formatted "  max_assertion_events is {surface.max_assertion_events}"
+    say formatted "  max_work is {surface.max_work}"
+    say formatted "  max_evidence is {surface.max_evidence}"
     say formatted "  max_text_units is {surface.max_text_units}"
     say formatted "  max_scope_units is {surface.max_scope_units}"
     say "  latest_revision_sentinel is -1"

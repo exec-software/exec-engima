@@ -4,6 +4,10 @@ Status: implemented. Events carry their issued revision, `compact` reclaims
 matched pairs under explicit scoped compaction authority (`16`), a view below the horizon answers
 `incomplete`, and the checkpoint schema is `enigma.state.v3`.
 
+The initial numerical bounds recorded here are superseded by
+[ENI-0008](ENI-0008-bounded-capacity.md): 1,024 retained events, 1,023 assertion
+admission, work through 1,024 events, and 128-item replies.
+
 ## The ceiling counts writes, not evidence
 
 An evidence store holds 128 events. Assertions and withdrawals both append, and

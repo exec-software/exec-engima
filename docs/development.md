@@ -62,6 +62,7 @@ From the Enigma project directory:
 ./scripts/build-storage.sh --target all
 ./scripts/test.sh
 ./scripts/test-durable-client.sh
+./scripts/test-capacity.sh
 ```
 
 The wrapper resolves the project independently of the invocation directory and
@@ -79,6 +80,10 @@ application example, then uses an external filesystem/process oracle to verify
 close, stale-owner refusal, factory cleanup, poisoned-session behavior, path
 pinning, and every typed operation on VM/native. It builds its own application
 fixtures and requires the lock-ownership API in the pinned SDK.
+
+`scripts/test-capacity.sh` exercises larger synthetic checkpoints, work versus
+reply limits, maintenance capacity, and confirmed byte-capacity refusals through
+the persistence hosts. It keeps the existing worker and process timeouts.
 
 ## Durable host
 

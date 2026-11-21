@@ -11,6 +11,9 @@ public surface_info begin record
     field model as text
     field operations as array of text
     field max_events as number
+    field max_assertion_events as number
+    field max_work as number
+    field max_evidence as number
     field max_text_units as number
     field max_scope_units as number
     field latest_revision_sentinel as number
@@ -26,7 +29,7 @@ public compaction_receipt begin record
 end record
 
 public describe_surface returns surface_info begin paragraph
-    give build surface_info with protocol being "enigma.evidence.v1", model being "evidence", operations being ["support", "oppose", "resolve", "inspect", "withdraw", "compact", "discover"], max_events being 128, max_text_units being 256, max_scope_units being 128, latest_revision_sentinel being minus 1, supports_persistence being no, requires_trusted_host being yes
+    give build surface_info with protocol being "enigma.evidence.v1", model being "evidence", operations being ["support", "oppose", "resolve", "inspect", "withdraw", "compact", "discover"], max_events being 1024, max_assertion_events being 1023, max_work being 1024, max_evidence being 128, max_text_units being 256, max_scope_units being 128, latest_revision_sentinel being minus 1, supports_persistence being no, requires_trusted_host being yes
 end paragraph
 
 !!! The host supplies authority and context. This package never mints grants.
@@ -102,7 +105,10 @@ describes_typed_surface_and_current_limits begin test
     expect (the length of surface.operations) equals 7
     expect (surface.operations at 5) equals "compact"
     expect (surface.operations at 6) equals "discover"
-    expect surface.max_events equals 128
+    expect surface.max_events equals 1024
+    expect surface.max_assertion_events equals 1023
+    expect surface.max_work equals 1024
+    expect surface.max_evidence equals 128
     expect surface.max_text_units equals 256
     expect surface.max_scope_units equals 128
     expect surface.latest_revision_sentinel equals minus 1

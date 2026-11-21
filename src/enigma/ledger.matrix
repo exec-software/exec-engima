@@ -150,7 +150,9 @@ public evidence_store begin class
         when expected_revision does not equal minus 1 and expected_revision does not equal my revision_value then
             give failed_write with code being "conflict"
         end when
-        when (my retained_count with nothing) is at least 128 then
+        !!! Keep the final retained-event slot available for a withdrawal.
+        !!! Reclaiming that pair still requires explicit compaction authority.
+        when (my retained_count with nothing) is at least 1023 then
             give failed_write with code being "capacity"
         end when
         variable polarity as number is 0
@@ -198,7 +200,7 @@ public evidence_store begin class
             end when
             set index to index plus 1
         end repeat
-        when (my retained_count with nothing) is at least 128 then
+        when (my retained_count with nothing) is at least 1024 then
             give failed_write with code being "capacity"
         end when
         value blank is empty_proposition with nothing
@@ -216,7 +218,7 @@ public evidence_store begin class
             give failed_resolution with code being "denied"
         end when
         when not (valid_proposition with claim being claim) or as_of is less than minus 1 or
-            max_work is less than 1 or max_work is greater than 128 or
+            max_work is less than 1 or max_work is greater than 1024 or
             max_evidence is less than 1 or max_evidence is greater than 128 then
             give failed_resolution with code being "invalid"
         end when
@@ -676,27 +678,81 @@ withdrawal_inspection_and_history_obey_current_grants begin test
 end test
 
 note suite "enigma.evidence"
-capacity_failure_does_not_append_partial_evidence begin test
+capacity_preserves_a_withdrawal_slot_and_explicit_compaction begin test
     value authority is open_authority with nothing
     value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
-        operations being 3, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+        operations being 31, expires being 100, work_limit being 1024, result_limit being 128, tick being 0
+    value narrow is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 31, expires being 100, work_limit being 128, result_limit being 128, tick being 0
     value caller is test_context with entity being "agent:a"
     value store is open_store with scope being "work"
     value claim is test_claim with nothing
-    repeat for index from 0 to 128
+    repeat for index from 0 to 1023
         value added is store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
             scope being "work", claim being claim, supports being yes, source being "test:bounded", expected_revision being index
         expect added.code equals "ok"
     end repeat
     value full is store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
-        scope being "work", claim being claim, supports being no, source being "test:overflow", expected_revision being 128
+        scope being "work", claim being claim, supports being no, source being "test:overflow", expected_revision being 1023
     expect full.code equals "capacity"
+    expect full.revision equals 0
+    expect (store.retained_count with nothing) equals 1023
     value result is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
-        scope being "work", claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
-    expect result.revision equals 128
-    expect result.supporting equals 128
+        scope being "work", claim being claim, as_of being minus 1, max_work being 1024, max_evidence being 128
+    expect result.revision equals 1023
+    expect result.supporting equals 1023
     expect result.opposing equals 0
     expect result.complete
+    expect not result.evidence_complete
+    expect (the length of result.evidence_ids) equals 128
+    expect (result.evidence_ids at 0) equals 1023
+    expect (result.evidence_ids at 127) equals 896
+    !!! Raising the engine ceiling does not widen an installed grant.
+    value denied_work is store.resolve with authority being authority, caller being caller, grant_id being narrow.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 1024, max_evidence being 128
+    expect denied_work.code equals "denied"
+    value partial is store.resolve with authority being authority, caller being caller, grant_id being narrow.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 128, max_evidence being 128
+    expect partial.code equals "ok"
+    expect not partial.complete
+    expect partial.inspected equals 128
+    expect (store.withdraw with authority being authority, caller being caller, grant_id being narrow.grant_id,
+        scope being "work", evidence_id being 1, expected_revision being 1023).code equals "limit"
+    expect (store.inspect with authority being authority, caller being caller, grant_id being narrow.grant_id,
+        scope being "work", evidence_id being 1, as_of being minus 1).code equals "limit"
+    expect (store.compact with authority being authority, caller being caller,
+        grant_id being narrow.grant_id, scope being "work").code equals "limit"
+    value invalid_work is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 1025, max_evidence being 128
+    expect invalid_work.code equals "invalid"
+    value invalid_output is store.resolve with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, as_of being minus 1, max_work being 1024, max_evidence being 129
+    expect invalid_output.code equals "invalid"
+    !!! Capacity leaves one event for a correction, without deleting history.
+    value withdrawn is store.withdraw with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", evidence_id being 1, expected_revision being 1023
+    expect withdrawn.code equals "ok"
+    expect withdrawn.event_id equals 1024
+    expect (store.retained_count with nothing) equals 1024
+    expect (store.withdraw with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", evidence_id being 2, expected_revision being 1024).code equals "capacity"
+    value withdraw_only is authority.install with entity being "agent:a", session being 1, scope being "work",
+        operations being 4, expires being 100, work_limit being 1024, result_limit being 128, tick being 1
+    expect (store.compact with authority being authority, caller being caller,
+        grant_id being withdraw_only.grant_id, scope being "work").code equals "denied"
+    expect (store.retained_count with nothing) equals 1024
+    value reclaimed is store.compact with authority being authority, caller being caller,
+        grant_id being issued.grant_id, scope being "work"
+    expect reclaimed.code equals "ok"
+    expect reclaimed.evidence_id equals 2
+    expect reclaimed.revision equals 1024
+    expect reclaimed.event_id equals 1024
+    expect (store.retained_count with nothing) equals 1022
+    value appended is store.assert_claim with authority being authority, caller being caller, grant_id being issued.grant_id,
+        scope being "work", claim being claim, supports being no, source being "test:after-compaction", expected_revision being 1024
+    expect appended.code equals "ok"
+    expect appended.evidence_id equals 1025
+    expect (store.retained_count with nothing) equals 1023
 end test
 
 note if_test_mode
@@ -709,7 +765,7 @@ churn_no_longer_spends_the_ceiling_and_a_kept_assertion_still_counts begin test
     !!! ENI-0005. Before compaction the ceiling counted every write, so a
     !!! store that revised a claim repeatedly filled up and refused, which is
     !!! the workload the engine exists to serve. This asserts and withdraws
-    !!! far past 128 while a separate assertion nobody retracted stays live.
+    !!! past the retained-event ceiling while an unwithdrawn assertion stays live.
     value authority is open_authority with nothing
     value issued is authority.install with entity being "agent:a", session being 1, scope being "work",
         operations being 31, expires being 100, work_limit being 128, result_limit being 128, tick being 0
@@ -720,7 +776,7 @@ churn_no_longer_spends_the_ceiling_and_a_kept_assertion_still_counts begin test
         supports being yes, source being "test:kept", expected_revision being minus 1
     expect kept.code equals "ok"
     variable cycle as number is 0
-    repeat while cycle is less than 300
+    repeat while cycle is less than 600
         value asserted is store.assert_claim with authority being authority, caller being caller,
             grant_id being issued.grant_id, scope being "work", claim being (test_claim with nothing),
             supports being yes, source being "test:churn", expected_revision being minus 1
@@ -737,7 +793,7 @@ churn_no_longer_spends_the_ceiling_and_a_kept_assertion_still_counts begin test
         set cycle to cycle plus 1
     end repeat
     !!! The clock advanced past the ceiling; what is held did not.
-    expect store.revision_value equals 601
+    expect store.revision_value equals 1201
     expect (store.retained_count with nothing) equals 1
     !!! The assertion nobody retracted is still evidence, and still resolves.
     value current is store.resolve with authority being authority, caller being caller,

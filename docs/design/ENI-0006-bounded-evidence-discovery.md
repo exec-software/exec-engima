@@ -2,6 +2,10 @@
 
 Status: implementation contract for the discovery slice.
 
+The initial numerical bounds recorded here are superseded by
+[ENI-0008](ENI-0008-bounded-capacity.md): 1,024 retained events, 1,023 assertion
+admission, work through 1,024 events, and 128-item replies.
+
 ## The missing operation
 
 `resolve` answers a question about a complete proposition. A caller must already
@@ -32,7 +36,8 @@ still be inspected explicitly, subject to retention.
 
 The Matrix batch owns independent primitive columns, following the supported
 native aggregate layout. The durable protocol serializes it as a JSON array of
-report objects. Its 128-item ceiling matches the engine's retained-event bound.
+report objects. Its 128-item ceiling is independent of the retained-event
+bound expanded in ENI-0008.
 General arrays of records remain a separate NIL native-runtime capability.
 
 Several reports can match the same proposition, and opposing reports are
@@ -51,8 +56,8 @@ and `evidence_complete`:
 | `complete` | All eligible history was examined and the snapshot remains reconstructable. |
 | `evidence_complete` | The investigation is complete and every matching report fits the output. |
 
-Both budgets range from 1 through 128 and must fit the grant's corresponding
-work/output limit. Reaching the output cap does not stop the scan: a complete
+Work ranges from 1 through 1,024 and output from 1 through 128; both must fit
+the grant's corresponding work/output limit. Reaching the output cap does not stop the scan: a complete
 investigation can have a truncated list. A bounded scan that returns no reports
 does not prove absence unless `complete` is true.
 
@@ -108,8 +113,9 @@ operations and receipt timeouts remain unchanged.
 
 This slice has no continuation cursor. A correct cursor would need snapshot and
 retention binding, withdrawal scan state, and a fresh authority check per call.
-The current 128-event store makes one bounded investigation useful; a partial
-result remains explicit rather than pretending to be a complete page sequence.
+A partial result remains explicit rather than pretending to be a complete page
+sequence. ENI-0008 expands storage and work while retaining the 128-item reply
+ceiling, so a complete investigation can still have a truncated list.
 There is no wildcard language, sorting expression, join, aggregation, inference,
 or text-query execution.
 

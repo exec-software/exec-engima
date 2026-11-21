@@ -125,7 +125,8 @@ Work counts eligible retained events, including withdrawals and nonmatches.
 The output cap can truncate items while a scan finishes: `complete` may be
 true with `evidence_complete` false. When the scan is incomplete, `matched`
 is only a lower bound, and an empty list does not prove absence. Both budgets
-must fit the grant and range from 1 through 128. Revision `0` stays exactly
+must fit the grant: work ranges from 1 through 1,024 and output from 1 through
+128. Revision `0` stays exactly
 empty; a nonzero revision below the retention horizon is incomplete. There is
 no continuation cursor in this slice.
 
@@ -173,11 +174,19 @@ staging files are never selected automatically. Interrupted operations may have
 committed without a receipt; inspect the recovered state before retrying.
 Requests are limited to 64 KiB per line, Matrix payloads to 512 KiB under NIL's
 text-length operation, and checkpoint envelopes to 1 MiB. The prototype holds
-128 retained events and 256 retained grant rows. Explicit evidence compaction
-can reclaim withdrawn pairs; recovery reclaims retired grant rows. An evidence
-store full of unwithdrawn assertions or a session with 256 retained grant rows
-still refuses further allocations. Identifiers are never recycled within the
-checkpoint lineage.
+1,024 retained events and 256 retained grant rows. Assertions stop at 1,023
+retained events to reserve one withdrawal slot. Durable admission separately
+bounds the encoded event array at 384 KiB (382 KiB for assertion admission)
+and the encoded grant array at 64 KiB. Large or escape-heavy records can reach
+byte capacity before the row ceiling. A confirmed `capacity` reply discards
+the attempted evidence/grant mutation while committing its observed security
+clock floor and the next generation; it does not poison the session.
+
+Explicit evidence compaction can reclaim withdrawn pairs; recovery reclaims
+retired grant rows. Compaction is still required to free event slots and does
+not happen automatically. Read work can cover 1,024 events, but every evidence
+list is capped at 128. Identifiers are never recycled within the checkpoint
+lineage. See [ENI-0008](design/ENI-0008-bounded-capacity.md).
 
 See [ENI-0002](design/ENI-0002-durable-state-and-recovery.md) and
 [SECURITY.md](../SECURITY.md) for exact filesystem assumptions, recovery retirement,

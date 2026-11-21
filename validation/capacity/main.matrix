@@ -1,0 +1,107 @@
+book enigma.validation.capacity
+
+read flush from nil.std.io
+read arg_count, arg from nil.std.system
+read from_byte from nil.std.text
+read open_database from enigma.durable.session
+read connect, provision_for_host from enigma.durable.client
+read access_context from enigma.authority
+read proposition from enigma.ledger
+read any_pattern from enigma.discovery
+
+caller receives tick as number returns access_context begin paragraph
+    give build access_context with entity being "agent:a", session being 11, audience being "enigma", tick being tick
+end paragraph
+
+announce receives message as text returns nothing begin paragraph
+    say message
+    evaluate flush with nothing
+    give nothing
+end paragraph
+
+large_read receives directory as text returns override integer begin paragraph
+    value opened is open_database with directory being directory
+    expect opened.code equals "ready"
+    value owner is opened.session
+    value admitted is provision_for_host with owner being owner, entity being "agent:a", session_id being 11,
+        operations being 1, expires being 1000, work_limit being 1024, result_limit being 128, tick being 10
+    expect admitted.confirmed
+    expect admitted.receipt.code equals "ok"
+    value client is connect with owner being owner, grant_id being admitted.receipt.grant_id
+    evaluate announce with message being "capacity-opened"
+    value claim is build proposition with subject being "synthetic:capacity", relation being "status", object_value being "ready"
+    value resolved is client.resolve with caller being (caller with tick being 11), claim being claim,
+        as_of being minus 1, max_work being 1024, max_evidence being 128
+    expect resolved.confirmed
+    expect resolved.receipt.code equals "ok"
+    expect resolved.receipt.complete
+    expect not resolved.receipt.evidence_complete
+    expect resolved.receipt.supporting equals 1023
+    expect resolved.receipt.inspected equals 1023
+    expect (the length of resolved.receipt.evidence_ids) equals 128
+    expect (resolved.receipt.evidence_ids at 127) equals 896
+    evaluate announce with message being "capacity-resolved"
+    value found is client.discover with caller being (caller with tick being 12), pattern being (any_pattern with nothing),
+        as_of being minus 1, max_work being 1024, max_evidence being 128
+    expect found.confirmed
+    expect found.receipt.code equals "ok"
+    expect found.receipt.complete
+    expect not found.receipt.evidence_complete
+    expect found.receipt.matched equals 1023
+    expect found.receipt.inspected equals 1023
+    expect (found.receipt.items.count with nothing) equals 128
+    expect ((found.receipt.items.get with index being 127).unwrap with nothing).id equals 896
+    evaluate announce with message being "capacity-discovered"
+    expect (owner.close with nothing) equals "closed"
+    evaluate announce with message being "capacity-closed"
+    give 0
+end paragraph
+
+byte_refusal receives directory as text returns override integer begin paragraph
+    value opened is open_database with directory being directory
+    expect opened.code equals "ready"
+    value owner is opened.session
+    value admitted is provision_for_host with owner being owner, entity being "agent:a", session_id being 11,
+        operations being 3, expires being 1000, work_limit being 1024, result_limit being 128, tick being 10
+    expect admitted.confirmed
+    expect admitted.receipt.code equals "ok"
+    value client is connect with owner being owner, grant_id being admitted.receipt.grant_id
+    evaluate announce with message being "capacity-opened"
+    variable wide as text is ""
+    repeat for index from 0 to 256
+        set wide to wide plus (from_byte with code being 1)
+    end repeat
+    value claim is build proposition with subject being wide, relation being wide, object_value being wide
+    value refused is client.support with caller being (caller with tick being 50), claim being claim,
+        source being wide, expected_revision being minus 1
+    expect refused.confirmed
+    expect refused.receipt.code equals "capacity"
+    expect refused.receipt.revision equals 0
+    expect refused.receipt.evidence_id equals 0
+    expect refused.receipt.event_id equals 0
+    expect refused.failure.code equals ""
+    expect not refused.failure.outcome_unknown
+    expect owner.active
+    expect not owner.poisoned
+    evaluate announce with message being "capacity-confirmed"
+    value observed is client.resolve with caller being (caller with tick being 50), claim being claim,
+        as_of being minus 1, max_work being 1024, max_evidence being 128
+    expect observed.confirmed
+    expect observed.receipt.code equals "ok"
+    expect observed.receipt.complete
+    expect observed.receipt.supporting equals 0
+    expect owner.active
+    evaluate announce with message being "capacity-usable"
+    expect (owner.close with nothing) equals "closed"
+    evaluate announce with message being "capacity-closed"
+    give 0
+end paragraph
+
+main returns override integer begin paragraph
+    expect (arg_count with nothing) equals 2
+    value mode is arg with index being 0
+    value directory is arg with index being 1
+    when mode equals "large" then give large_read with directory being directory end when
+    when mode equals "bytes" then give byte_refusal with directory being directory end when
+    give 2
+end paragraph

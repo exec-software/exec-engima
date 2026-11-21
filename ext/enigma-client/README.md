@@ -16,7 +16,10 @@ Use `describe_surface with nothing` to discover protocol `enigma.evidence.v1`,
 the operation list, current hard limits, and this embedded client's lack of
 persistence. This describes the protocol, not the permissions held by a particular grant. Text
 limits use the engine's Matrix text-length operation. Each call returns a fresh
-description, including a fresh operation array.
+description, including a fresh operation array. `max_events` is 1,024,
+`max_assertion_events` is 1,023, `max_work` is 1,024, and `max_evidence` is 128.
+The assertion limit leaves one event slot for an explicit withdrawal before
+authorized compaction. Larger scans still return bounded replies.
 
 | Operation | Meaning |
 | --- | --- |
@@ -87,7 +90,8 @@ end repeat
 including withdrawals and nonmatches. `matched` counts observed matching active
 reports; it is only a lower bound if `complete` is false. `evidence_complete`
 also becomes false when `max_evidence` truncates the returned items, even when
-the scan itself completed. Both budgets remain subject to the grant's limits.
+the scan itself completed. Work ranges from 1 through 1,024 and output from
+1 through 128; both budgets remain subject to the grant's limits.
 
 Revision `0` stays exactly empty. History below the reported `retained_from`
 horizon remains incomplete after compaction, and every call rechecks current

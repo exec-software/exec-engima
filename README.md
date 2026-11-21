@@ -91,9 +91,12 @@ after revocation: denied
 
 `--surface` emits a NILData description of the companion operations and hard
 limits. The client accepts typed requests; it does not need to generate query
-strings. Stores currently hold at most 128 retained events, with retracted
-evidence reclaimable on request, and all data disappears at
-process exit in this embedded demo.
+strings. Stores currently hold at most 1,024 retained events, with assertions
+limited to 1,023 to reserve a withdrawal slot. Read work can cover 1,024 events;
+returned evidence stays capped at 128 items. Retracted evidence is reclaimable
+on request. All data disappears at process exit in this embedded demo. Durable
+stores also enforce separate encoded evidence and grant budgets; see
+[ENI-0008](docs/design/ENI-0008-bounded-capacity.md).
 
 ## Persistence and recovery
 
