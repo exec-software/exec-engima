@@ -9,6 +9,7 @@ object
     item is "inspect"
     item is "withdraw"
     item is "compact"
+    item is "discover"
   end array
   max_events is 128
   max_text_units is 256

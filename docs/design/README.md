@@ -21,10 +21,13 @@ the Python placeholder host is retired.
 decides how retired grants are reclaimed without recycling an identifier.
 [ENI-0005: Evidence retention](ENI-0005-evidence-retention.md) gives the event
 log the same treatment, reclaiming retracted evidence on request.
+[ENI-0006: Bounded evidence discovery](ENI-0006-bounded-evidence-discovery.md)
+adds exact-or-any patterns over active reports without requiring a known triple.
 
 | Area | Current behavior |
 | --- | --- |
 | Evidence | Exact text propositions with independently attributable support and opposition. |
+| Discovery | Exact-or-any selectors return active reports with provenance, a pinned snapshot, and separate scan/output completeness. |
 | History | Assertions and withdrawals append events; as-of reads preserve prior views. |
 | Resolution | `unknown`, `supported`, `contradicted`, or `contested` after a complete scan; `incomplete` when work runs out. |
 | Bounds | 128 retained events per store, explicit work/output limits, and separate evidence-list completeness. An invoked compaction reclaims retracted evidence; a view below the resulting horizon answers `incomplete`. |

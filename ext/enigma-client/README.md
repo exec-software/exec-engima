@@ -26,6 +26,7 @@ description, including a fresh operation array.
 | `inspect` | Retrieve one evidence item at an explicit revision. |
 | `withdraw` | Withdraw evidence through the engine's ownership and revision checks. |
 | `compact` | Explicitly reclaim retracted evidence across the scope under separate maintenance authority. |
+| `discover` | Find active evidence and provenance using exact-or-any proposition selectors. |
 
 The client forwards exact revision and budget arguments. It does not retry
 writes, silently increase limits, choose a truth winner, or turn a partial
@@ -44,6 +45,55 @@ compaction authority. Existing masks such as `7` (read, assert, withdraw-own)
 keep their previous authority. A host can explicitly install `23` to include
 compaction in that mask, subject to the same context, revocation, scope, and
 work-limit checks. Delegation can only retain rights already held by the parent.
+
+## Discover evidence without knowing the whole proposition
+
+`discover` uses the existing read right `1`. The typed `evidence_pattern` has
+three `Option of text` selectors: `Option.None` accepts any value, while
+`Option.Some` matches exact nonempty text of at most 256 units. Characters such
+as `*` and `?` are literal data. This is not a wildcard or query-string language.
+
+```matrix
+read everything from nil.std.core.option
+read evidence_pattern from enigma.discovery
+
+value related is build evidence_pattern with subject being Option.None,
+    relation being (Option.Some holding "depends-on"), object_value being Option.None
+value found is adapter.discover with pattern being related, as_of being minus 1,
+    max_work being 128, max_evidence being 16
+```
+
+The result carries active evidence `items` in descending evidence-ID order,
+including their proposition, polarity, source, and acting entity/session. Two
+items can concern the same proposition or disagree; discovery does not choose a
+truth winner or return a resolved proposition verdict. Use `resolve` for the
+evidence state of a selected proposition.
+
+`items` is a bounded `evidence_batch`. Its `count with nothing` gives the number
+of returned reports; `get with index being index` returns `Option of evidence_item`,
+with `None` for an index outside the batch. Each retrieved record is a copy.
+The durable JSON receipt represents the same reports as an `items` array.
+
+```matrix
+repeat for index from 0 to (found.items.count with nothing)
+    consider found.items.get with index being index
+        when Option.Some holding report then say report.subject
+        when Option.None then say "No report at this index."
+    end consider
+end repeat
+```
+
+`revision` pins the requested snapshot. `inspected` meters scanned events,
+including withdrawals and nonmatches. `matched` counts observed matching active
+reports; it is only a lower bound if `complete` is false. `evidence_complete`
+also becomes false when `max_evidence` truncates the returned items, even when
+the scan itself completed. Both budgets remain subject to the grant's limits.
+
+Revision `0` stays exactly empty. History below the reported `retained_from`
+horizon remains incomplete after compaction, and every call rechecks current
+authority even for a historical revision. Denied or invalid results expose no
+evidence or snapshot metadata. This first bounded operation has no continuation
+cursor; callers must not treat a truncated list as exhaustive.
 
 ## Host setup and trust
 
@@ -96,7 +146,8 @@ export NIL_STRICT_BOUNDS=1
 
 The example uses synthetic data and explicitly installed host fixture grants.
 It demonstrates contradiction, a historical snapshot after withdrawal, and a
-bounded incomplete query. Process exit discards all data.
+bounded incomplete query, and checks discovery of active evidence without an
+exact proposition. Process exit discards all data.
 
 For direct imports, add `ext/enigma-client/src` and the engine's `src` directory
 to your project's `includePaths`. The client depends on the engine's public

@@ -1,0 +1,113 @@
+book enigma.evidence_batch
+
+read everything from nil.std.core.option
+read evidence_item from enigma.ledger
+
+!!! A bounded report buffer using the engine's primitive-column layout.
+!!! Returned records are copies. Public Matrix fields remain trusted-host
+!!! memory, not a capability or hostile-code isolation boundary.
+public evidence_batch begin class
+    field ids as array of number
+    field subjects as array of text
+    field relations as array of text
+    field objects as array of text
+    field polarities as array of number
+    field sources as array of text
+    field entities as array of text
+    field sessions as array of number
+    field asserted_ats as array of number
+    field withdrawn_ats as array of number
+
+    ready returns boolean begin paragraph
+        value size is the length of my ids
+        give size is at most 128 and (the length of my subjects) equals size and
+            (the length of my relations) equals size and (the length of my objects) equals size and
+            (the length of my polarities) equals size and (the length of my sources) equals size and
+            (the length of my entities) equals size and (the length of my sessions) equals size and
+            (the length of my asserted_ats) equals size and (the length of my withdrawn_ats) equals size
+    end paragraph
+
+    public count returns number begin paragraph
+        give the length of my ids
+    end paragraph
+
+    public get receives index as number returns Option of evidence_item begin paragraph
+        when not (my ready with nothing) or index is less than 0 or index is at least (my count with nothing) then
+            give Option.None
+        end when
+        value item is build evidence_item with id being my ids at index, subject being my subjects at index,
+            relation being my relations at index, object_value being my objects at index,
+            supports being (my polarities at index) equals 1, source being my sources at index,
+            entity being my entities at index, session being my sessions at index,
+            asserted_at being my asserted_ats at index, withdrawn_at being my withdrawn_ats at index
+        give Option.Some holding item
+    end paragraph
+
+    public push receives item as evidence_item returns boolean begin paragraph
+        when not (my ready with nothing) or (my count with nothing) is at least 128 then
+            give no
+        end when
+        variable polarity as number is 0
+        when item.supports then
+            set polarity to 1
+        end when
+        append item.id to my ids
+        append item.subject to my subjects
+        append item.relation to my relations
+        append item.object_value to my objects
+        append polarity to my polarities
+        append item.source to my sources
+        append item.entity to my entities
+        append item.session to my sessions
+        append item.asserted_at to my asserted_ats
+        append item.withdrawn_at to my withdrawn_ats
+        give yes
+    end paragraph
+end class
+
+public open_batch returns evidence_batch begin paragraph
+    give build evidence_batch with ids being [], subjects being [], relations being [], objects being [],
+        polarities being [], sources being [], entities being [], sessions being [], asserted_ats being [], withdrawn_ats being []
+end paragraph
+
+note if_test_mode
+fixture_item receives identifier as number returns evidence_item begin paragraph
+    give build evidence_item with id being identifier, subject being "subject:batch", relation being "reports",
+        object_value being "ready", supports being yes, source being "fixture:batch", entity being "agent:batch",
+        session being 11, asserted_at being identifier, withdrawn_at being 0
+end paragraph
+
+note suite "enigma.evidence_batch"
+batch_bounds_and_capacity_are_checked_without_exposing_a_sentinel_row begin test
+    value batch is open_batch with nothing
+    expect (batch.count with nothing) equals 0
+    expect (batch.get with index being minus 1).is_none with nothing
+    expect (batch.get with index being 0).is_none with nothing
+    repeat for identifier from 1 to 129
+        expect batch.push with item being (fixture_item with identifier being identifier)
+    end repeat
+    expect (batch.count with nothing) equals 128
+    expect not (batch.push with item being (fixture_item with identifier being 129))
+    expect (batch.count with nothing) equals 128
+    expect ((batch.get with index being 0).unwrap with nothing).id equals 1
+    expect ((batch.get with index being 127).unwrap with nothing).id equals 128
+    expect (batch.get with index being 128).is_none with nothing
+end test
+
+note suite "enigma.evidence_batch"
+batch_rows_are_copies_and_misaligned_host_columns_are_refused begin test
+    value batch is open_batch with nothing
+    value original is fixture_item with identifier being 7
+    expect batch.push with item being original
+    set original.source to "changed before read"
+    value copied is (batch.get with index being 0).unwrap with nothing
+    expect copied.source equals "fixture:batch"
+    set copied.source to "changed after read"
+    expect ((batch.get with index being 0).unwrap with nothing).source equals "fixture:batch"
+    append "extra column" to batch.sources
+    expect (batch.get with index being 0).is_none with nothing
+    expect not (batch.push with item being original)
+    expect (batch.count with nothing) equals 1
+    value independent is open_batch with nothing
+    expect (independent.count with nothing) equals 0
+end test

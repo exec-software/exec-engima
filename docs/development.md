@@ -11,11 +11,20 @@ The upstream Linux prerequisites include a C++17 compiler, CMake 3.21 or newer,
 Python 3.12 or newer, LLVM development packages, and Pandoc. Follow upstream for
 the current dependency details and other platforms.
 
-For example, build a clean public checkout beside this project:
+Discovery requires the field-type canonicalization fix from NIL commit
+[`ebc4eb5`](https://github.com/exec-software/exec-nil-framework/commit/ebc4eb518156248cee9dbc6585d16ba09eb464f3),
+proposed with the storage additions in
+[NIL PR #42](https://github.com/exec-software/exec-nil-framework/pull/42).
+Earlier compilers can run the pattern on the VM but reject its optional text
+fields during native compilation. The version string alone does not identify
+this fix; select a matching complete development SDK.
+
+For example, build the pinned public source beside this project:
 
 ```sh
 git clone https://github.com/exec-software/exec-nil-framework.git ../exec-nil-framework
 cd ../exec-nil-framework
+git checkout ebc4eb518156248cee9dbc6585d16ba09eb464f3
 CMAKE_BUILD_PARALLEL_LEVEL=4 CTEST_PARALLEL_LEVEL=4 ./scripts/build-sdk.sh
 ```
 
@@ -32,15 +41,11 @@ SDK discovery in `scripts/nil.sh` uses this order:
 Tools reside directly in the SDK directory. If a PATH entry is a launcher or a
 symlink outside that directory, set `NIL_SDK` explicitly.
 
-The seed is validated with a local development SDK reporting `1.0.0-rc.1`.
-That SDK reports a dirty source tree, so its version string is not a reproducible
-upstream dependency pin. Clean upstream SDK qualification, a pinned toolchain,
-and hosted CI are follow-up work; no prebuilt release is assumed.
-
-The current retention and durable-host slice also has a clean source-pinned
-development SDK validation. See [the validation record](validation.md) for the
-NIL revision, commands, results, and qualification limits. The framework changes
-are proposed in [NIL PR #42](https://github.com/exec-software/exec-nil-framework/pull/42).
+The original seed used an SDK reporting `1.0.0-rc.1` from a dirty tree; that
+version string was not a reproducible dependency pin. Current development uses
+the clean source revision above. See [the validation record](validation.md) for
+commands, results, and qualification limits. Release-SDK qualification and hosted
+CI remain follow-up work; no prebuilt release is assumed.
 
 ## Daily commands
 
@@ -136,9 +141,11 @@ acknowledged, an unsafe or multiply-linked checkpoint is refused, a rewritten
 payload fails its digest, and an oversized request ends a session rather than
 being truncated into a different one.
 
-`scripts/store.py` stays the qualified path because the Matrix host needs
-NIL-0028 through NIL-0030 and a native `random.hex`, so making it the default
-would leave `./scripts/test.sh` unrunnable without a development build. Short
+`scripts/store.py` stays the default path while the Matrix host's NIL-0028
+through NIL-0030 and native `random.hex` dependencies await release-SDK
+qualification. Native discovery also needs the newer compiler pinned above;
+current validation uses a matching complete development SDK. Host cutover stays
+separate from this query change. Short
 writes, a crash at a chosen commit phase, forged worker replies, and the
 host's response to an uncertain publication still need a seam inside a host
 and are not claimed. See [ENI-0003](design/ENI-0003-matrix-durable-host.md). Preserve

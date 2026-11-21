@@ -1,0 +1,467 @@
+book enigma.discovery
+
+read everything from nil.std.core.option
+read authority_registry, access_context, open_authority from enigma.authority
+read evidence_store, evidence_item, proposition, open_store from enigma.ledger
+read evidence_batch, open_batch from enigma.evidence_batch
+
+!!! None selects any value; Some selects exact text. Characters such as * and
+!!! ? have no special meaning and cannot turn data into query structure.
+public evidence_pattern begin record
+    field subject as Option of text
+    field relation as Option of text
+    field object_value as Option of text
+end record
+
+public discovery_result begin record
+    field code as text
+    field revision as number
+    field retained_from as number
+    field complete as boolean
+    field evidence_complete as boolean
+    field inspected as number
+    field matched as number
+    field items as evidence_batch
+end record
+
+public any_pattern returns evidence_pattern begin paragraph
+    value any as Option of text is Option.None
+    give build evidence_pattern with subject being any, relation being any, object_value being any
+end paragraph
+
+public exact_pattern receives claim as proposition returns evidence_pattern begin paragraph
+    value subject as Option of text is Option.Some holding claim.subject
+    value relation as Option of text is Option.Some holding claim.relation
+    value object_value as Option of text is Option.Some holding claim.object_value
+    give build evidence_pattern with subject being subject, relation being relation, object_value being object_value
+end paragraph
+
+valid_selector receives selector as Option of text returns boolean begin paragraph
+    consider selector
+        when Option.None then give yes
+        when Option.Some holding exact then
+            give (the length of exact) is greater than 0 and (the length of exact) is at most 256
+    end consider
+end paragraph
+
+matches_selector receives selector as Option of text, candidate as text returns boolean begin paragraph
+    consider selector
+        when Option.None then give yes
+        when Option.Some holding exact then give candidate equals exact
+    end consider
+end paragraph
+
+failed_discovery receives code as text returns discovery_result begin paragraph
+    give build discovery_result with code being code, revision being 0, retained_from being 0,
+        complete being no, evidence_complete being no, inspected being 0, matched being 0, items being (open_batch with nothing)
+end paragraph
+
+!!! This is evidence discovery, not proposition resolution. Each returned row
+!!! is one active report at the pinned revision; several rows may concern the
+!!! same proposition or disagree. matched is only a lower bound when the scan
+!!! is incomplete, while evidence_complete separately describes output limits.
+public discover receives store as evidence_store, authority as authority_registry, caller as access_context,
+    grant_id as number, scope as text, pattern as evidence_pattern, as_of as number,
+    max_work as number, max_evidence as number returns discovery_result begin paragraph
+    value access is authority.authorize with caller being caller, grant_id being grant_id,
+        scope being scope, operation being 1
+    when access.code does not equal "ok" or scope does not equal store.scope_name then
+        give failed_discovery with code being "denied"
+    end when
+    when not (valid_selector with selector being pattern.subject) or
+        not (valid_selector with selector being pattern.relation) or
+        not (valid_selector with selector being pattern.object_value) or
+        as_of is less than minus 1 or max_work is less than 1 or max_work is greater than 128 or
+        max_evidence is less than 1 or max_evidence is greater than 128 then
+        give failed_discovery with code being "invalid"
+    end when
+    when max_work is greater than access.work_limit or max_evidence is greater than access.result_limit then
+        give failed_discovery with code being "denied"
+    end when
+    variable snapshot as number is as_of
+    when snapshot equals minus 1 then
+        set snapshot to store.revision_value
+    end when
+    when snapshot is greater than store.revision_value then
+        give failed_discovery with code being "invalid"
+    end when
+
+    variable withdrawn as array of number is []
+    value items is open_batch with nothing
+    variable index as number is (store.retained_count with nothing) minus 1
+    variable inspected as number is 0
+    variable matched as number is 0
+    repeat while index is at least 0 and inspected is less than max_work
+        !!! Newer events are outside this snapshot and spend no work budget.
+        when (store.event_ids at index) is greater than snapshot then
+            set index to index minus 1
+        otherwise
+            set inspected to inspected plus 1
+            when (store.event_kinds at index) equals 2 then
+                append (store.targets at index) to withdrawn
+            end when
+            !!! Newest first is essential: every withdrawal capable of retiring
+            !!! this assertion has already been visited before it can be emitted.
+            when (store.event_kinds at index) equals 1 then
+                value evidence_id is store.event_ids at index
+                variable active as boolean is yes
+                repeat for each target in withdrawn
+                    when target equals evidence_id then
+                        set active to no
+                    end when
+                end repeat
+                when active and (matches_selector with selector being pattern.subject, candidate being store.subjects at index) and
+                    (matches_selector with selector being pattern.relation, candidate being store.relations at index) and
+                    (matches_selector with selector being pattern.object_value, candidate being store.objects at index) then
+                    set matched to matched plus 1
+                    when (items.count with nothing) is less than max_evidence then
+                        value item is build evidence_item with id being evidence_id, subject being store.subjects at index,
+                            relation being store.relations at index, object_value being store.objects at index,
+                            supports being (store.polarities at index) equals 1, source being store.sources at index,
+                            entity being store.entities at index, session being store.sessions at index,
+                            asserted_at being evidence_id, withdrawn_at being 0
+                        evaluate items.push with item being item
+                    end when
+                end when
+            end when
+            set index to index minus 1
+        end when
+    end repeat
+    value reconstructable is snapshot equals 0 or snapshot is at least store.retained_from
+    value complete is index is less than 0 and reconstructable
+    give build discovery_result with code being "ok", revision being snapshot, retained_from being store.retained_from,
+        complete being complete, evidence_complete being complete and (items.count with nothing) equals matched,
+        inspected being inspected, matched being matched, items being items
+end paragraph
+
+note if_test_mode
+fixture_caller receives entity as text, session as number returns access_context begin paragraph
+    give build access_context with entity being entity, session being session, audience being "enigma", tick being 1
+end paragraph
+
+note if_test_mode
+fixture_authority returns authority_registry begin paragraph
+    value authority is open_authority with nothing
+    value first is authority.install with entity being "agent:a", session being 11, scope being "work",
+        operations being 31, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    value second is authority.install with entity being "agent:b", session being 22, scope being "work",
+        operations being 7, expires being 100, work_limit being 128, result_limit being 128, tick being 0
+    expect first.code equals "ok"
+    expect second.code equals "ok"
+    give authority
+end paragraph
+
+note if_test_mode
+fixture_store receives authority as authority_registry returns evidence_store begin paragraph
+    value store is open_store with scope being "work"
+    value first is fixture_caller with entity being "agent:a", session being 11
+    value second is fixture_caller with entity being "agent:b", session being 22
+    value alpha is build proposition with subject being "subject:alpha", relation being "reports", object_value being "ready"
+    value beta is build proposition with subject being "subject:beta", relation being "reports", object_value being "blocked"
+    value literal is build proposition with subject being "*", relation being "reports", object_value being "?"
+    expect (store.assert_claim with authority being authority, caller being first, grant_id being 1, scope being "work",
+        claim being alpha, supports being yes, source being "fixture:alpha", expected_revision being 0).code equals "ok"
+    expect (store.assert_claim with authority being authority, caller being second, grant_id being 2, scope being "work",
+        claim being alpha, supports being no, source being "fixture:counter", expected_revision being 1).code equals "ok"
+    expect (store.assert_claim with authority being authority, caller being first, grant_id being 1, scope being "work",
+        claim being beta, supports being yes, source being "fixture:beta", expected_revision being 2).code equals "ok"
+    expect (store.assert_claim with authority being authority, caller being second, grant_id being 2, scope being "work",
+        claim being literal, supports being yes, source being "fixture:literal", expected_revision being 3).code equals "ok"
+    expect (store.withdraw with authority being authority, caller being first, grant_id being 1, scope being "work",
+        evidence_id being 1, expected_revision being 4).code equals "ok"
+    give store
+end paragraph
+
+note if_test_mode
+read_fixture receives store as evidence_store, authority as authority_registry, pattern as evidence_pattern,
+    as_of as number, max_work as number, max_evidence as number returns discovery_result begin paragraph
+    give discover with store being store, authority being authority,
+        caller being (fixture_caller with entity being "agent:a", session being 11), grant_id being 1, scope being "work",
+        pattern being pattern, as_of being as_of, max_work being max_work, max_evidence being max_evidence
+end paragraph
+
+note if_test_mode
+expect_blank receives result as discovery_result, code as text begin paragraph
+    expect result.code equals code
+    expect result.revision equals 0
+    expect result.retained_from equals 0
+    expect not result.complete
+    expect not result.evidence_complete
+    expect result.inspected equals 0
+    expect result.matched equals 0
+    expect (result.items.count with nothing) equals 0
+end paragraph
+
+note suite "enigma.discovery"
+all_any_discovers_active_reports_with_polarity_and_provenance begin test
+    value authority is fixture_authority with nothing
+    value store is fixture_store with authority being authority
+    value found is read_fixture with store being store, authority being authority, pattern being (any_pattern with nothing),
+        as_of being minus 1, max_work being 128, max_evidence being 128
+    expect found.code equals "ok"
+    expect found.revision equals 5
+    expect found.retained_from equals 0
+    expect found.complete
+    expect found.evidence_complete
+    expect found.inspected equals 5
+    expect found.matched equals 3
+    expect (found.items.count with nothing) equals 3
+    value newest is (found.items.get with index being 0).unwrap with nothing
+    expect newest.id equals 4
+    expect newest.subject equals "*"
+    expect newest.relation equals "reports"
+    expect newest.object_value equals "?"
+    expect newest.source equals "fixture:literal"
+    expect newest.entity equals "agent:b"
+    expect newest.session equals 22
+    expect newest.asserted_at equals 4
+    expect newest.withdrawn_at equals 0
+    expect newest.supports
+    value middle is (found.items.get with index being 1).unwrap with nothing
+    expect middle.id equals 3
+    expect middle.entity equals "agent:a"
+    value opposed is (found.items.get with index being 2).unwrap with nothing
+    expect opposed.id equals 2
+    expect not opposed.supports
+    expect opposed.source equals "fixture:counter"
+    expect opposed.withdrawn_at equals 0
+end test
+
+note suite "enigma.discovery"
+selectors_are_exact_data_and_none_is_the_only_wildcard begin test
+    value authority is fixture_authority with nothing
+    value store is fixture_store with authority being authority
+    value any as Option of text is Option.None
+    value alpha as Option of text is Option.Some holding "subject:alpha"
+    value reports as Option of text is Option.Some holding "reports"
+    value blocked as Option of text is Option.Some holding "blocked"
+    value subject_only is build evidence_pattern with subject being alpha, relation being any, object_value being any
+    value relation_only is build evidence_pattern with subject being any, relation being reports, object_value being any
+    value object_only is build evidence_pattern with subject being any, relation being any, object_value being blocked
+    value by_subject is read_fixture with store being store, authority being authority, pattern being subject_only,
+        as_of being minus 1, max_work being 128, max_evidence being 128
+    expect by_subject.matched equals 1
+    expect ((by_subject.items.get with index being 0).unwrap with nothing).id equals 2
+    value by_relation is read_fixture with store being store, authority being authority, pattern being relation_only,
+        as_of being minus 1, max_work being 128, max_evidence being 128
+    expect by_relation.matched equals 3
+    value by_object is read_fixture with store being store, authority being authority, pattern being object_only,
+        as_of being minus 1, max_work being 128, max_evidence being 128
+    expect by_object.matched equals 1
+    expect ((by_object.items.get with index being 0).unwrap with nothing).id equals 3
+    value literal_claim is build proposition with subject being "*", relation being "reports", object_value being "?"
+    value literal is read_fixture with store being store, authority being authority,
+        pattern being (exact_pattern with claim being literal_claim), as_of being minus 1, max_work being 128, max_evidence being 128
+    expect literal.matched equals 1
+    expect ((literal.items.get with index being 0).unwrap with nothing).id equals 4
+    value missing as Option of text is Option.Some holding "missing"
+    value no_match is build evidence_pattern with subject being any, relation being missing, object_value being any
+    value absent is read_fixture with store being store, authority being authority, pattern being no_match,
+        as_of being minus 1, max_work being 128, max_evidence being 128
+    expect absent.complete
+    expect absent.evidence_complete
+    expect absent.matched equals 0
+    expect (absent.items.count with nothing) equals 0
+end test
+
+note suite "enigma.discovery"
+snapshots_pin_history_and_keep_scan_limits_separate_from_output_limits begin test
+    value authority is fixture_authority with nothing
+    value store is fixture_store with authority being authority
+    value pattern is any_pattern with nothing
+    value historical is read_fixture with store being store, authority being authority, pattern being pattern,
+        as_of being 1, max_work being 1, max_evidence being 1
+    expect historical.complete
+    expect historical.evidence_complete
+    expect historical.inspected equals 1
+    expect historical.matched equals 1
+    expect ((historical.items.get with index being 0).unwrap with nothing).id equals 1
+    expect ((historical.items.get with index being 0).unwrap with nothing).source equals "fixture:alpha"
+    value zero is read_fixture with store being store, authority being authority, pattern being pattern,
+        as_of being 0, max_work being 1, max_evidence being 1
+    expect zero.complete
+    expect zero.evidence_complete
+    expect zero.inspected equals 0
+    expect zero.matched equals 0
+    expect (zero.items.count with nothing) equals 0
+    !!! The newest event is a withdrawal. A one-event scan must not emit the
+    !!! assertion it retires or claim that no active evidence exists.
+    value partial is read_fixture with store being store, authority being authority, pattern being pattern,
+        as_of being minus 1, max_work being 1, max_evidence being 128
+    expect not partial.complete
+    expect not partial.evidence_complete
+    expect partial.inspected equals 1
+    expect partial.matched equals 0
+    expect (partial.items.count with nothing) equals 0
+    value observed is read_fixture with store being store, authority being authority, pattern being pattern,
+        as_of being minus 1, max_work being 2, max_evidence being 128
+    expect not observed.complete
+    expect observed.inspected equals 2
+    expect observed.matched equals 1
+    expect ((observed.items.get with index being 0).unwrap with nothing).id equals 4
+    value capped is read_fixture with store being store, authority being authority, pattern being pattern,
+        as_of being minus 1, max_work being 128, max_evidence being 1
+    expect capped.complete
+    expect not capped.evidence_complete
+    expect capped.inspected equals 5
+    expect capped.matched equals 3
+    expect (capped.items.count with nothing) equals 1
+    value missing as Option of text is Option.Some holding "missing"
+    value any as Option of text is Option.None
+    value no_match is build evidence_pattern with subject being missing, relation being any, object_value being any
+    value nonmatches is read_fixture with store being store, authority being authority, pattern being no_match,
+        as_of being minus 1, max_work being 2, max_evidence being 128
+    expect not nonmatches.complete
+    expect nonmatches.inspected equals 2
+    expect nonmatches.matched equals 0
+end test
+
+note suite "enigma.discovery"
+invalid_selectors_and_request_bounds_return_empty_results begin test
+    value authority is fixture_authority with nothing
+    value store is fixture_store with authority being authority
+    value any as Option of text is Option.None
+    value empty as Option of text is Option.Some holding ""
+    value invalid is build evidence_pattern with subject being empty, relation being any, object_value being any
+    evaluate expect_blank with result being (read_fixture with store being store, authority being authority,
+        pattern being invalid, as_of being minus 1, max_work being 128, max_evidence being 128), code being "invalid"
+    variable too_long as text is "x"
+    repeat for index from 0 to 8
+        set too_long to too_long plus too_long
+    end repeat
+    value large as Option of text is Option.Some holding (too_long plus "x")
+    value oversized is build evidence_pattern with subject being any, relation being large, object_value being any
+    evaluate expect_blank with result being (read_fixture with store being store, authority being authority,
+        pattern being oversized, as_of being minus 1, max_work being 128, max_evidence being 128), code being "invalid"
+    value pattern is any_pattern with nothing
+    evaluate expect_blank with result being (read_fixture with store being store, authority being authority,
+        pattern being pattern, as_of being minus 2, max_work being 128, max_evidence being 128), code being "invalid"
+    evaluate expect_blank with result being (read_fixture with store being store, authority being authority,
+        pattern being pattern, as_of being 6, max_work being 128, max_evidence being 128), code being "invalid"
+    evaluate expect_blank with result being (read_fixture with store being store, authority being authority,
+        pattern being pattern, as_of being 5, max_work being 0, max_evidence being 128), code being "invalid"
+    evaluate expect_blank with result being (read_fixture with store being store, authority being authority,
+        pattern being pattern, as_of being 5, max_work being 129, max_evidence being 128), code being "invalid"
+    evaluate expect_blank with result being (read_fixture with store being store, authority being authority,
+        pattern being pattern, as_of being 5, max_work being 128, max_evidence being 0), code being "invalid"
+    evaluate expect_blank with result being (read_fixture with store being store, authority being authority,
+        pattern being pattern, as_of being 5, max_work being 128, max_evidence being 129), code being "invalid"
+end test
+
+note suite "enigma.discovery"
+authority_precedes_pattern_validation_and_limits_each_request begin test
+    value authority is fixture_authority with nothing
+    value store is fixture_store with authority being authority
+    value caller is fixture_caller with entity being "agent:a", session being 11
+    value any as Option of text is Option.None
+    value empty as Option of text is Option.Some holding ""
+    value invalid is build evidence_pattern with subject being empty, relation being any, object_value being any
+    !!! Invalid input must not become a validation oracle before authorization.
+    evaluate expect_blank with result being (discover with store being store, authority being authority, caller being caller,
+        grant_id being 999, scope being "work", pattern being invalid, as_of being 900,
+        max_work being 0, max_evidence being 0), code being "denied"
+    value writer is authority.install with entity being "agent:a", session being 11, scope being "work",
+        operations being 2, expires being 100, work_limit being 128, result_limit being 128, tick being 1
+    evaluate expect_blank with result being (discover with store being store, authority being authority, caller being caller,
+        grant_id being writer.grant_id, scope being "work", pattern being invalid, as_of being 900,
+        max_work being 0, max_evidence being 0), code being "denied"
+    value pattern is any_pattern with nothing
+    value other_store is open_store with scope being "other"
+    evaluate expect_blank with result being (discover with store being other_store, authority being authority, caller being caller,
+        grant_id being 1, scope being "work", pattern being invalid, as_of being 900,
+        max_work being 0, max_evidence being 0), code being "denied"
+    value limited is authority.install with entity being "reader", session being 33, scope being "work",
+        operations being 1, expires being 100, work_limit being 2, result_limit being 1, tick being 1
+    value reader is fixture_caller with entity being "reader", session being 33
+    evaluate expect_blank with result being (discover with store being store, authority being authority, caller being reader,
+        grant_id being limited.grant_id, scope being "work", pattern being pattern, as_of being minus 1,
+        max_work being 3, max_evidence being 1), code being "denied"
+    evaluate expect_blank with result being (discover with store being store, authority being authority, caller being reader,
+        grant_id being limited.grant_id, scope being "work", pattern being pattern, as_of being minus 1,
+        max_work being 2, max_evidence being 2), code being "denied"
+    value bounded is discover with store being store, authority being authority, caller being reader,
+        grant_id being limited.grant_id, scope being "work", pattern being pattern, as_of being minus 1,
+        max_work being 2, max_evidence being 1
+    expect bounded.code equals "ok"
+    expect not bounded.complete
+    expect bounded.inspected equals 2
+    expect ((bounded.items.get with index being 0).unwrap with nothing).id equals 4
+    value child is authority.delegate with caller being caller, parent_id being 1, entity being "child", session being 44,
+        operations being 1, expires being 90, work_limit being 128, result_limit being 128
+    expect child.code equals "ok"
+    value child_caller is fixture_caller with entity being "child", session being 44
+    value before is discover with store being store, authority being authority, caller being child_caller,
+        grant_id being child.grant_id, scope being "work", pattern being pattern, as_of being minus 1,
+        max_work being 128, max_evidence being 128
+    expect before.complete
+    expect (authority.revoke with caller being caller, grant_id being 1).code equals "ok"
+    evaluate expect_blank with result being (discover with store being store, authority being authority, caller being child_caller,
+        grant_id being child.grant_id, scope being "work", pattern being pattern, as_of being 4,
+        max_work being 128, max_evidence being 128), code being "denied"
+end test
+
+note suite "enigma.discovery"
+compaction_horizons_keep_missing_history_incomplete_without_renumbering begin test
+    value authority is fixture_authority with nothing
+    value store is fixture_store with authority being authority
+    value caller is fixture_caller with entity being "agent:a", session being 11
+    expect (store.compact with authority being authority, caller being caller, grant_id being 1, scope being "work").code equals "ok"
+    value pattern is any_pattern with nothing
+    value latest is read_fixture with store being store, authority being authority, pattern being pattern,
+        as_of being minus 1, max_work being 128, max_evidence being 128
+    expect latest.complete
+    expect latest.evidence_complete
+    expect latest.retained_from equals 5
+    expect latest.revision equals 5
+    expect latest.inspected equals 3
+    expect latest.matched equals 3
+    expect ((latest.items.get with index being 2).unwrap with nothing).id equals 2
+    value incomplete is read_fixture with store being store, authority being authority, pattern being pattern,
+        as_of being 4, max_work being 128, max_evidence being 128
+    expect incomplete.code equals "ok"
+    expect incomplete.retained_from equals 5
+    expect not incomplete.complete
+    expect not incomplete.evidence_complete
+    expect incomplete.matched equals 3
+    value zero is read_fixture with store being store, authority being authority, pattern being pattern,
+        as_of being 0, max_work being 1, max_evidence being 1
+    expect zero.complete
+    expect zero.evidence_complete
+    expect zero.matched equals 0
+    value claim is build proposition with subject being "subject:new", relation being "reports", object_value being "ready"
+    expect (store.assert_claim with authority being authority, caller being caller, grant_id being 1, scope being "work",
+        claim being claim, supports being yes, source being "fixture:new", expected_revision being 5).evidence_id equals 6
+    value pinned is read_fixture with store being store, authority being authority, pattern being pattern,
+        as_of being latest.revision, max_work being 128, max_evidence being 128
+    expect pinned.complete
+    expect pinned.matched equals 3
+    value advanced is read_fixture with store being store, authority being authority, pattern being pattern,
+        as_of being minus 1, max_work being 128, max_evidence being 128
+    expect advanced.revision equals 6
+    expect advanced.matched equals 4
+    expect ((advanced.items.get with index being 0).unwrap with nothing).id equals 6
+end test
+
+note suite "enigma.discovery"
+result_batches_are_fresh_and_stores_remain_independent begin test
+    value authority is fixture_authority with nothing
+    value store is fixture_store with authority being authority
+    value pattern is any_pattern with nothing
+    value first is read_fixture with store being store, authority being authority, pattern being pattern,
+        as_of being minus 1, max_work being 128, max_evidence being 128
+    value second is read_fixture with store being store, authority being authority, pattern being pattern,
+        as_of being minus 1, max_work being 128, max_evidence being 128
+    set first.items.sources at 0 to "changed result"
+    expect ((first.items.get with index being 0).unwrap with nothing).source equals "changed result"
+    expect ((second.items.get with index being 0).unwrap with nothing).id equals 4
+    expect ((second.items.get with index being 0).unwrap with nothing).source equals "fixture:literal"
+    expect (store.event_ids at 3) equals 4
+    expect (store.sources at 3) equals "fixture:literal"
+    value independent is open_store with scope being "work"
+    value empty is read_fixture with store being independent, authority being authority, pattern being pattern,
+        as_of being minus 1, max_work being 128, max_evidence being 128
+    expect empty.revision equals 0
+    expect empty.complete
+    expect empty.matched equals 0
+    expect (empty.items.count with nothing) equals 0
+end test

@@ -135,6 +135,148 @@ class StorageRecoveryTests(unittest.TestCase):
         return host.request({"op": "resolve", "caller": who or caller(), "grant_id": grant_id,
                              "claim": CLAIM, "as_of": as_of, "max_work": 128, "max_evidence": 128})
 
+    def discover(self, host: HostSession, grant_id: int, *, who: dict | None = None,
+                 pattern: dict | None = None, as_of: int = -1,
+                 max_work: int = 128, max_evidence: int = 128) -> dict:
+        return host.request({"op": "discover", "caller": who or caller(), "grant_id": grant_id,
+                             "pattern": pattern if pattern is not None else {
+                                 "subject": None, "relation": None, "object_value": None},
+                             "as_of": as_of, "max_work": max_work, "max_evidence": max_evidence})
+
+    def test_discovery_preserves_active_history_provenance_and_completeness(self) -> None:
+        for target in TARGETS:
+            with self.subTest(target=target), tempfile.TemporaryDirectory(prefix="enigma-discovery-") as temporary:
+                path = Path(temporary) / "db"
+                self.initialize(path, target)
+                with HostSession(path, target) as host:
+                    first_instance = host.instance
+                    grant = self.install(host)["grant_id"]
+                    for operation, claim, source in (
+                            ("support", CLAIM, 'synthetic:"support"\nΩ'),
+                            ("oppose", CLAIM, "synthetic:opposition"),
+                            ("support", {"subject": "*", "relation": "ready", "object_value": "literal"},
+                             "synthetic:literal-star")):
+                        added = host.request({"op": operation, "caller": caller(), "grant_id": grant,
+                                              "claim": claim, "source": source, "expected_revision": -1})
+                        self.assertEqual(added["code"], "ok")
+                    literal = self.discover(host, grant, pattern={
+                        "subject": "*", "relation": None, "object_value": None})
+                    self.assertEqual([row["id"] for row in literal["items"]], [3])
+                    self.assertEqual(literal["matched"], 1, "star is literal data, not a wildcard")
+                    withdrawn = host.request({"op": "withdraw", "caller": caller(), "grant_id": grant,
+                                              "evidence_id": 2, "expected_revision": 3})
+                    self.assertEqual(withdrawn["revision"], 4)
+                    historical = self.discover(host, grant, as_of=2)
+                    self.assertEqual([row["id"] for row in historical["items"]], [2, 1])
+                    self.assertEqual([row["supports"] for row in historical["items"]], [False, True])
+                    self.assertTrue(historical["complete"])
+                    self.assertEqual(historical["inspected"], 2, "future events spend no snapshot budget")
+                    current = self.discover(host, grant, pattern={
+                        "subject": None, "relation": "ready", "object_value": None})
+                    self.assertEqual((current["revision"], current["matched"]), (4, 2))
+                    self.assertEqual([row["id"] for row in current["items"]], [3, 1])
+                    row = current["items"][1]
+                    self.assertEqual((row["entity"], row["session"], row["asserted_at"], row["withdrawn_at"]),
+                                     ("agent:a", 11, 1, 0))
+                    self.assertEqual(row["source"], 'synthetic:"support"\nΩ')
+                    truncated = self.discover(host, grant, max_evidence=1)
+                    self.assertEqual((truncated["matched"], len(truncated["items"])), (2, 1))
+                    self.assertTrue(truncated["complete"])
+                    self.assertFalse(truncated["evidence_complete"])
+                    bounded = self.discover(host, grant, max_work=1)
+                    self.assertEqual((bounded["inspected"], bounded["matched"], bounded["items"]), (1, 0, []))
+                    self.assertFalse(bounded["complete"], "a newest withdrawal cannot expose its older assertion")
+                    empty = self.discover(host, grant, as_of=0)
+                    self.assertEqual((empty["revision"], empty["inspected"], empty["matched"], empty["items"]),
+                                     (0, 0, 0, []))
+                    self.assertTrue(empty["complete"])
+                with HostSession(path, target) as host:
+                    self.assertEqual(self.discover(host, grant), {"code": "denied", "instance": "", "generation": 0})
+                    fresh = self.install(host, session=22, operations=1)["grant_id"]
+                    found = self.discover(host, fresh, who=caller(session=22))
+                    self.assertEqual([row["id"] for row in found["items"]], [3, 1])
+                    self.assertEqual(found["items"][1]["session"], 11)
+                    before = checkpoint(path)[0]
+                    stale = host.request({"op": "discover", "instance": first_instance,
+                                          "caller": caller(session=22), "grant_id": fresh, "pattern": False})
+                    self.assertEqual(stale, {"code": "denied", "instance": "", "generation": 0})
+                    self.assertEqual(checkpoint(path)[0], before)
+
+    def test_discovery_checks_current_authority_before_query_shape_and_persists_time(self) -> None:
+        denied = {"code": "denied", "instance": "", "generation": 0}
+        invalid = {"code": "invalid", "instance": "", "generation": 0}
+        for target in TARGETS:
+            with self.subTest(target=target), tempfile.TemporaryDirectory(prefix="enigma-discovery-") as temporary:
+                path = Path(temporary) / "db"
+                self.initialize(path, target)
+                with HostSession(path, target) as host:
+                    writer = self.install(host, operations=2)["grant_id"]
+                    self.assertEqual(self.discover(host, writer, who=caller(tick=50), pattern={}), denied)
+                    self.assertEqual(checkpoint(path)[1]["clock_floor"], 50)
+                    parent = self.install(host, operations=9, tick=50)["grant_id"]
+                    child = host.request({"op": "delegate", "caller": caller(tick=50), "parent_id": parent,
+                                          "entity": "agent:reader", "session": 22, "operations": 1,
+                                          "expires": 900, "work_limit": 2, "result_limit": 1})
+                    self.assertEqual(child["code"], "ok")
+                    holder = caller("agent:reader", 22, 50)
+                    self.assertEqual(self.discover(host, child["grant_id"], who=holder), denied)
+                    bounded = self.discover(host, child["grant_id"], who=holder, max_work=2, max_evidence=1)
+                    self.assertEqual(bounded["code"], "ok")
+                    self.assertTrue(bounded["complete"])
+                    for pattern in ({}, {"subject": None, "relation": None, "object_value": None, "extra": None},
+                                    {"subject": "", "relation": None, "object_value": None},
+                                    {"subject": "x" * 257, "relation": None, "object_value": None},
+                                    {"subject": False, "relation": None, "object_value": None},
+                                    {"subject": 1, "relation": None, "object_value": None}):
+                        with self.subTest(pattern=pattern):
+                            self.assertEqual(self.discover(host, child["grant_id"], who=holder, pattern=pattern,
+                                                           max_work=2, max_evidence=1), invalid)
+                    self.assertEqual(self.discover(host, child["grant_id"], who=holder, as_of=1,
+                                                   max_work=2, max_evidence=1), invalid)
+                    revoked = host.request({"op": "revoke", "caller": caller(tick=50), "grant_id": parent})
+                    self.assertEqual(revoked["code"], "ok")
+                    self.assertEqual(self.discover(host, child["grant_id"], who=holder, pattern={}), denied)
+                    self.assertEqual(checkpoint(path)[1]["clock_floor"], 50)
+
+    def test_discovery_full_width_receipt_stays_within_the_host_frame(self) -> None:
+        # Seed the independently encoded synthetic history instead of making
+        # 128 durable writes. Serving still validates and re-encodes every row
+        # through the real Matrix recovery and dispatcher paths.
+        content = '"\\\n' * 85 + '"'
+        actor = '"\\\n' * 42 + '"\\'
+        self.assertEqual((len(content), len(actor)), (256, 128))
+        for target in TARGETS:
+            with self.subTest(target=target), tempfile.TemporaryDirectory(prefix="enigma-discovery-") as temporary:
+                path = Path(temporary) / "db"
+                self.initialize(path, target)
+                canonical = path / "checkpoint.json"
+                envelope = json.loads(canonical.read_bytes())
+                state = json.loads(envelope["payload"])
+                state["revision"] = 128
+                state["events"] = [{"id": i, "kind": 1, "subject": content, "relation": content,
+                                    "object_value": content, "polarity": i % 2, "source": content,
+                                    "entity": actor, "session": 77, "target": 0} for i in range(1, 129)]
+                envelope["payload"] = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+                envelope["sha256"] = hashlib.sha256(envelope["payload"].encode("utf-8")).hexdigest()
+                canonical.write_text(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                with HostSession(path, target) as host:
+                    grant = self.install(host, operations=1)["grant_id"]
+                    found = self.discover(host, grant)
+                    self.assertEqual((found["code"], found["revision"], found["matched"], found["inspected"]),
+                                     ("ok", 128, 128, 128))
+                    self.assertTrue(found["complete"])
+                    self.assertTrue(found["evidence_complete"])
+                    self.assertEqual([row["id"] for row in found["items"]], list(range(128, 0, -1)))
+                    for row in found["items"]:
+                        self.assertEqual(set(row), {"id", "subject", "relation", "object_value", "supports",
+                                                    "source", "entity", "session", "asserted_at", "withdrawn_at"})
+                        self.assertEqual([row[key] for key in ("subject", "relation", "object_value", "source")],
+                                         [content] * 4)
+                        self.assertEqual((row["entity"], row["session"], row["asserted_at"], row["withdrawn_at"]),
+                                         (actor, 77, row["id"], 0))
+                        self.assertEqual(row["supports"], bool(row["id"] % 2))
+                    self.assertLess(len(json.dumps(found, ensure_ascii=False).encode("utf-8")), 2 * 1024 * 1024)
+
     def test_evidence_history_and_provenance_survive_fresh_process(self) -> None:
         source = 'synthetic:pass "checked"\nnext line Ω'
         for target in TARGETS:
@@ -468,6 +610,13 @@ class StorageRecoveryTests(unittest.TestCase):
                                               "max_evidence": 128})
                     self.assertEqual(stale["state"], "incomplete")
                     self.assertFalse(stale["complete"])
+                    discovered = self.discover(reopened, fresh, who=holder, as_of=1)
+                    self.assertEqual(discovered["retained_from"], gone["revision"])
+                    self.assertFalse(discovered["complete"])
+                    self.assertFalse(discovered["evidence_complete"])
+                    empty = self.discover(reopened, fresh, who=holder, as_of=0)
+                    self.assertTrue(empty["complete"])
+                    self.assertEqual(empty["items"], [])
 
     def test_restoring_older_coherent_checkpoint_does_not_reactivate_session(self) -> None:
         for target in TARGETS:

@@ -13,7 +13,7 @@ semantics by convention.
 
 The companion [Matrix client](../../ext/enigma-client/README.md) lives under
 `ext/enigma-client`, outside the framework's core standard library. It exposes
-`support`, `oppose`, `resolve`, `inspect`, `withdraw`, and `compact`, plus a discoverable
+`support`, `oppose`, `resolve`, `inspect`, `withdraw`, `compact`, and `discover`, plus a discoverable
 surface descriptor. Requests pass typed propositions and explicit parameters;
 agents do not need to synthesize query strings.
 
@@ -33,6 +33,20 @@ Withdrawals append a correction event and preserve prior snapshots. Withdrawal
 and inspection also check grant work limits and can return `limit` without
 returning evidence. See [ENI-0001](ENI-0001-evidence-and-authority.md) for the
 complete operation and authority contract.
+
+Discovery accepts exact-or-any selectors for the proposition's three fields,
+so a caller can explore a subject or relation without guessing a complete
+triple. In Matrix, `Option.None` means any and `Option.Some holding text` means
+exact text. Characters such as `*` remain literal data. The durable protocol
+uses JSON `null` and strings for the same distinction.
+
+`discover` returns active reports with full provenance, newest ID first, at
+one explicit snapshot. It reports scan and output completeness separately,
+like resolution. `matched` counts observed reports rather than propositions;
+it is a lower bound when the scan is incomplete. Reports can disagree, and
+discovery supplies no truth verdict. Current scoped read authority applies,
+including to old snapshots. See [ENI-0006](ENI-0006-bounded-evidence-discovery.md)
+for the work, retention, and failure contract.
 
 Compaction explicitly reclaims an assertion together with its withdrawal,
 retaining unwithdrawn evidence and every issued identifier. Its receipt reports

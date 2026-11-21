@@ -7,10 +7,10 @@ read write_bytes_durable, read_regular_bytes, sync_directory,
     is_private_directory, is_private_regular_file, sha256_hex,
     read_line_option, write_error,
     dirname from nil.std.io
-read byte_at, from_byte, char_at, contains from nil.std.text
+read byte_at, from_byte, char_at, contains, substring from nil.std.text
 read random_hex from nil.std.security
 read arg_count, arg from nil.std.system
-read stage_request from enigma.storage
+read stage_request_typed from enigma.storage
 read build_envelope, read_envelope, confirm_envelope,
     exact_object, field_text, field_number, field_value from enigma.persistence
 
@@ -22,7 +22,7 @@ read build_envelope, read_envelope, confirm_envelope,
 !!! digest. NIL-0028 through NIL-0030 supply those, so the host can be Matrix.
 !!!
 !!! The host/worker split was a language boundary, not an isolation boundary,
-!!! and it is gone: staging now calls stage_request in process. The request
+!!! and it is gone: staging now calls stage_request_typed in process. The request
 !!! envelope is still serialized and re-parsed on the way in. That is
 !!! deliberate. It keeps the worker's strict validation exactly as qualified
 !!! rather than introducing a second, looser path into the engine, and it
@@ -73,18 +73,61 @@ end paragraph
 
 bytes_of receives content as text returns array of override byte begin paragraph
     variable octets as array of override byte is []
-    repeat for index from 0 to (the length of content)
-        append (byte_at with s being content, index being index) becomes override byte to octets
+    value size is the length of content
+    variable offset as number is 0
+    repeat while offset is less than size
+        variable width as number is 1024
+        when size minus offset is less than width then
+            set width to size minus offset
+        end when
+        !!! Byte access may measure or copy its text argument. Keep that
+        !!! argument bounded rather than passing the full checkpoint per byte.
+        value block is substring with s being content, start being offset, length being width
+        repeat for index from 0 to width
+            append (byte_at with s being block, index being index) becomes override byte to octets
+        end repeat
+        set offset to offset plus width
     end repeat
     give octets
 end paragraph
 
 text_of receives octets as array of override byte returns text begin paragraph
-    variable content as text is ""
+    !!! Keep per-byte copies bounded, then join complete chunks pairwise.
+    !!! Growing one prefix for an entire checkpoint copied its whole history
+    !!! for every byte. Text here remains raw bytes, including UTF-8 sequences
+    !!! split across a chunk boundary; no decoding or normalization occurs.
+    variable chunks as array of text is []
+    variable chunk as text is ""
+    variable held as number is 0
     repeat for each octet in octets
-        set content to content plus (from_byte with code being octet becomes number)
+        set chunk to chunk plus (from_byte with code being octet becomes number)
+        set held to held plus 1
+        when held equals 1024 then
+            append chunk to chunks
+            set chunk to ""
+            set held to 0
+        end when
     end repeat
-    give content
+    when held is greater than 0 then
+        append chunk to chunks
+    end when
+    when (the length of chunks) equals 0 then
+        give ""
+    end when
+    repeat while (the length of chunks) is greater than 1
+        variable merged as array of text is []
+        variable index as number is 0
+        repeat while index is less than (the length of chunks)
+            when index plus 1 is less than (the length of chunks) then
+                append ((chunks at index) plus (chunks at (index plus 1))) to merged
+            otherwise
+                append (chunks at index) to merged
+            end when
+            set index to index plus 2
+        end repeat
+        set chunks to merged
+    end repeat
+    give chunks at 0
 end paragraph
 
 public metadata_view begin record
@@ -250,7 +293,7 @@ end paragraph
 
 !!! Stage one dispatch against the committed payload. The envelope is built
 !!! with the checked encoder, never concatenated, and handed to the same
-!!! stage_request the separate worker process used to receive.
+!!! strict request decoder the separate worker process uses.
 stage receives mode as text, committed as text, database_id as text,
     incarnation as text, scope as text, request as `Value` returns stage_view begin paragraph
     variable envelope is (new_object with nothing).unwrap with nothing
@@ -274,22 +317,13 @@ stage receives mode as text, committed as text, database_id as text,
     when serialized.is_error with nothing then
         give stage_failed with code being "worker_protocol"
     end when
-    value reply_text is stage_request with input being (serialized.unwrap with nothing)
-    value parsed is from_json with reply_text
-    when parsed.is_error with nothing then
-        give stage_failed with code being "worker_protocol"
-    end when
-    value reply is parsed.unwrap with nothing
-    value reply_keys as array of text is ["code", "payload", "receipt"]
-    when not (exact_object with node being reply, keys being reply_keys) then
-        give stage_failed with code being "worker_protocol"
-    end when
-    value reply_code_found is field_text with node being reply, key being "code"
-    value reply_payload_found is field_text with node being reply, key being "payload"
-    when reply_code_found.is_error with nothing or reply_payload_found.is_error with nothing then
-        give stage_failed with code being "worker_protocol"
-    end when
-    value reply_code is reply_code_found.unwrap with nothing
+    !!! The typed reply fixes the exact code/payload/receipt shape by
+    !!! construction. Its payload and receipt remain separate bounded values:
+    !!! the worker's combined frame may exceed NILData's single-value ceiling.
+    !!! Request decoding above and candidate verification below stay shared
+    !!! with the worker path; no authority object crosses this boundary.
+    value reply is stage_request_typed with input being (serialized.unwrap with nothing)
+    value reply_code is reply.code
     when reply_code does not equal "ok" then
         !!! The engine reporting corrupt state is distinct from it breaking its
         !!! own protocol, and recovery must not confuse the two.
@@ -298,7 +332,7 @@ stage receives mode as text, committed as text, database_id as text,
         end when
         give stage_failed with code being "worker_protocol"
     end when
-    value receipt is field_value with node being reply, key being "receipt"
+    value receipt is reply.receipt
     value receipt_shape is kind with receipt
     when receipt_shape.is_error with nothing then
         give stage_failed with code being "worker_protocol"
@@ -306,7 +340,7 @@ stage receives mode as text, committed as text, database_id as text,
     when (receipt_shape.unwrap with nothing) does not equal "object" then
         give stage_failed with code being "worker_protocol"
     end when
-    value candidate is reply_payload_found.unwrap with nothing
+    value candidate is reply.payload
     value verdict is check_candidate with mode being mode, committed being committed,
         candidate being candidate, receipt being receipt, database_id being database_id,
         incarnation being incarnation
@@ -578,6 +612,51 @@ main returns override integer begin paragraph
     end when
     give fail with code being "invalid_arguments"
 end paragraph
+
+note suite "enigma.host.bytes"
+an_empty_byte_sequence_remains_empty_text begin test
+    value octets as array of override byte is []
+    expect (text_of with octets being octets) equals ""
+    expect (the length of (bytes_of with content being (text_of with octets being octets))) equals 0
+end test
+
+note suite "enigma.host.bytes"
+chunk_boundaries_and_unpaired_merge_chunks_preserve_every_byte begin test
+    value sizes as array of number is [1, 1023, 1024, 1025, 2048, 2049, 3073]
+    repeat for each size in sizes
+        variable octets as array of override byte is []
+        repeat for index from 0 to size
+            !!! Exercise all non-NUL byte values, not just repeated ASCII.
+            append ((index remainder 255) plus 1) becomes override byte to octets
+        end repeat
+        value decoded is text_of with octets being octets
+        expect (the length of decoded) equals size
+        value restored is bytes_of with content being decoded
+        expect (the length of restored) equals size
+        repeat for index from 0 to size
+            expect (restored at index) equals (octets at index)
+        end repeat
+    end repeat
+end test
+
+note suite "enigma.host.bytes"
+a_multibyte_scalar_split_between_chunks_round_trips_unchanged begin test
+    variable prefix as text is ""
+    repeat for index from 0 to 1023
+        set prefix to prefix plus "x"
+    end repeat
+    value content is prefix plus "Ω" plus "tail"
+    value octets is bytes_of with content being content
+    expect (octets at 1023) equals (206 becomes override byte)
+    expect (octets at 1024) equals (169 becomes override byte)
+    value restored is text_of with octets being octets
+    expect restored equals content
+    value restored_octets is bytes_of with content being restored
+    expect (the length of restored_octets) equals (the length of octets)
+    repeat for index from 0 to (the length of octets)
+        expect (restored_octets at index) equals (octets at index)
+    end repeat
+end test
 
 note if_test_mode
 sample_id returns text begin paragraph

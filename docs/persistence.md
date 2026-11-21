@@ -60,6 +60,9 @@ caller = dict(entity="demo:agent", session=1, audience="enigma", tick=1)
 claim = dict(subject="release:sample", relation="ready", object_value="yes")
 print(request(op="support", caller=caller, grant_id=grant["grant_id"],
               claim=claim, source="synthetic:passing-check", expected_revision=-1))
+print(request(op="discover", caller=caller, grant_id=grant["grant_id"],
+              pattern=dict(subject="release:sample", relation=None, object_value=None),
+              as_of=-1, max_work=128, max_evidence=16))
 print(request(op="revoke", caller=caller, grant_id=grant["grant_id"]))
 host.stdin.close()
 assert host.wait() == 0
@@ -90,9 +93,10 @@ exact fields `entity`, `session`, `audience` (`enigma`), and `tick`.
 | `compact` | `grant_id`; explicit scope-wide history reclamation. |
 | `resolve` | `grant_id`, `claim`, `as_of`, `max_work`, `max_evidence`. |
 | `inspect` | `grant_id`, `evidence_id`, `as_of`. |
+| `discover` | `grant_id`, `pattern`, `as_of`, `max_work`, `max_evidence`. |
 
 `claim` has exact text fields `subject`, `relation`, `object_value`. Rights are
-resolve/inspect `1`, assert `2`, withdraw-own `4`, delegate `8`, and compact `16`,
+resolve/inspect/discover `1`, assert `2`, withdraw-own `4`, delegate `8`, and compact `16`,
 combined as a bitmask. Existing masks `1` through `15` gain no maintenance
 authority. The single store's scope is supplied by the host, not by request data.
 Revision `-1` requests latest or disables a write precondition; `0` remains a
@@ -101,6 +105,32 @@ metadata. Failure receipts keep incarnation/generation empty or zero. Treat
 `denied`, `invalid`, `conflict`, `limit`, `capacity`, and `not_found` as distinct
 outcomes. Only a stale-incarnation denial leaves the checkpoint unchanged;
 accepted stages, including domain denials, commit security state before reply.
+
+## Bounded evidence discovery
+
+`pattern` requires exactly `subject`, `relation`, and `object_value`. Each is
+either `null` for any value or a nonempty string of at most 256 NIL text units
+for an exact match. A string such as `"*"` matches that literal value; it is
+not an operator. All-null selects all active reports in the authorized scope.
+
+A successful receipt returns `items` (full evidence records), `revision`,
+`retained_from`, `inspected`, `matched`, `complete`, and `evidence_complete`.
+Items are active at the selected revision, newest evidence ID first, and
+retain source, actor/session, and polarity. Multiple reports for one proposition
+remain separate. Discovery does not decide which report is true.
+
+Work counts eligible retained events, including withdrawals and nonmatches.
+The output cap can truncate items while a scan finishes: `complete` may be
+true with `evidence_complete` false. When the scan is incomplete, `matched`
+is only a lower bound, and an empty list does not prove absence. Both budgets
+must fit the grant and range from 1 through 128. Revision `0` stays exactly
+empty; a nonzero revision below the retention horizon is incomplete. There is
+no continuation cursor in this slice.
+
+Current read authority (`1`) is checked before pattern validation and evidence
+access. Expired, revoked, wrong-session, and retired grants cannot discover
+history. Like other accepted read stages, discovery commits the logical clock
+floor before its receipt. See [ENI-0006](design/ENI-0006-bounded-evidence-discovery.md).
 
 ## Explicit evidence retention
 

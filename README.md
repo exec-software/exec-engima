@@ -18,6 +18,8 @@ appends an event; earlier snapshots keep their original meaning.
   These describe evidence, not objective truth or probability.
 - Receive evidence IDs, counts, revision, and separate scan/output completeness.
   A budget-exhausted scan reports `incomplete`.
+- Discover active reports using exact-or-any proposition fields, including their
+  source and acting entity/session, without guessing complete triples.
 - Use scoped, session-bound grants with operation, expiry, and work/output
   limits; delegation can only narrow authority and ancestor revocation stays live.
 - Reclaim withdrawn evidence under a separate scope-wide compaction permission;
@@ -44,7 +46,9 @@ volatile; durable acknowledgements come only through the separate storage host.
 ## Build and run
 
 Install or build a complete NIL SDK using the
-[development guide](docs/development.md). From this checkout:
+[development guide](docs/development.md). Discovery's optional text fields need
+the compiler fix pinned there; an older SDK with the same version string may
+lack it. From this checkout:
 
 ```sh
 export NIL_SDK=/absolute/path/to/exec-nil-framework/sdk
@@ -121,6 +125,8 @@ power-cut behavior has not been qualified.
 | `nil.project.nildata` | NIL project settings; analyzer warnings fail checking. |
 | `src/main.matrix` | Executable entrypoint. |
 | `src/enigma/ledger.matrix` | Append-only evidence, temporal reads, bounded resolution. |
+| `src/enigma/discovery.matrix` | Bounded pattern discovery of active evidence with provenance. |
+| `src/enigma/evidence_batch.matrix` | Bounded typed batches of returned evidence. |
 | `src/enigma/authority.matrix` | Host grant lifecycle and authorization. |
 | `src/enigma/persistence.matrix` | Checkpoint codec and semantic recovery validation. |
 | `src/enigma/storage.matrix` | Staged durable operation and recovery transitions. |

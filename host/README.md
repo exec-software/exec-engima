@@ -12,10 +12,11 @@ enigma-durable-host serve <directory>
 `--target` is accepted and ignored. It selected a worker route for the Python
 host; staging is in process now.
 
-This is a separate project rather than part of `src/` because it needs NIL-0028
-through NIL-0030, which no installed SDK has. Keeping it out of `src/enigma/`
-lets `./scripts/test.sh` keep running on the previously selected SDK. Build and
-exercise it with a matching development SDK:
+This is a separate project because its filesystem and stream dependencies
+include NIL-0028 through NIL-0030. Those surfaces still need release-SDK
+qualification. The engine's native discovery API also needs the optional-text
+field compiler fix pinned in the [development guide](../docs/development.md).
+Build and exercise this host with a matching development SDK:
 
 ```sh
 NIL_SDK=/absolute/path/to/matching/development-sdk ./scripts/test-matrix-host.sh
@@ -38,10 +39,16 @@ records the full division.
 ## What the collapse changed
 
 The host/worker split was a language boundary, not an isolation boundary, and
-it is gone: staging calls `stage_request` in process instead of spawning a
+it is gone: staging calls `stage_request_typed` in process instead of spawning a
 worker. The request envelope is still serialized and re-parsed on the way in,
 deliberately, so the worker's strict validation stays exactly as qualified
 rather than gaining a second, looser entry point.
+
+The reply stays typed so a checkpoint and full discovery result do not need to
+fit together inside one NILData value. Candidate validation is unchanged; the
+external worker encodes the same bounded JSON packet from checked component
+fragments. [ENI-0006](../docs/design/ENI-0006-bounded-evidence-discovery.md)
+defines this framing boundary.
 
 A fresh worker process per dispatch used to make retained authority
 structurally impossible. In one process that becomes a code invariant, so every
@@ -62,9 +69,10 @@ and an oversized request ends the session rather than being truncated into a
 different one. Both contracts run against both hosts, because a scenario only
 one host satisfies describes that host rather than the contract.
 
-What keeps `store.py` in place is not missing evidence but the SDK. This host
-needs NIL-0028 through NIL-0030 and a native `random.hex`, so making it the
-default would leave `./scripts/test.sh` unrunnable without a development build.
+`store.py` remains the default while the filesystem/runtime additions await
+release-SDK qualification and the host cutover remains separate. Native
+discovery now also requires a newer compiler, so the current SDK dependency is
+explicit rather than inferred from the unchanged version string.
 
 Four scenarios still need a seam inside a host and are not claimed here: a
 partial write followed by success, a crash at a chosen commit phase, a worker

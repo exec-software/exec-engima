@@ -1,10 +1,13 @@
 book enigma.storage
 
 read everything from nil.std.nildata
+read everything from nil.std.core.option
+read substring from nil.std.text
 read durable_state, new_state, decode_state, encode_state, exact_object,
     field_value, field_text, field_number from enigma.persistence
 read access_context from enigma.authority
-read proposition from enigma.ledger
+read proposition, evidence_item from enigma.ledger
+read evidence_pattern, discover from enigma.discovery
 
 empty_object returns `Value` begin paragraph
     give (new_object with nothing).unwrap with nothing
@@ -72,16 +75,60 @@ bound_receipt receives code as text, snapshot as durable_state returns `Value` b
     give receipt
 end paragraph
 
-packet receives code as text, payload as text, receipt as `Value` returns text begin paragraph
-    variable reply is empty_object with nothing
-    set reply to put_text with node being reply, key being "code", input being code
-    set reply to put_text with node being reply, key being "payload", input being payload
-    set reply to (object_set with reply, "receipt", receipt).unwrap with nothing
-    give (to_json with reply).unwrap with nothing
+!!! A candidate and its receipt can each fit NILData's document limit while
+!!! their transport envelope does not. Keep the in-process result typed so a
+!!! Matrix host never needs to combine and reparse those independent documents.
+public staging_result begin record
+    field code as text
+    field payload as text
+    field receipt as `Value`
+end record
+
+packet receives code as text, payload as text, receipt as `Value` returns staging_result begin paragraph
+    give build staging_result with code being code, payload being payload, receipt being receipt
 end paragraph
 
-failed_packet receives code as text returns text begin paragraph
+failed_packet receives code as text returns staging_result begin paragraph
     give packet with code being code, payload being "", receipt being (base_receipt with code being code)
+end paragraph
+
+framing_failure returns text begin paragraph
+    !!! Fixed protocol failure, never a partial candidate or a host diagnostic.
+    give "{" plus quote plus "code" plus quote plus ":" plus quote plus "invalid" plus quote plus
+        "," plus quote plus "payload" plus quote plus ":" plus quote plus quote plus
+        "," plus quote plus "receipt" plus quote plus ":{" plus quote plus "code" plus quote plus ":" plus quote plus "invalid" plus quote plus
+        "," plus quote plus "generation" plus quote plus ":0," plus quote plus "instance" plus quote plus ":" plus quote plus quote plus "}}"
+end paragraph
+
+encode_staging_result receives staged as staging_result returns text begin paragraph
+    !!! Only independently checked JSON fragments meet the fixed structural
+    !!! punctuation below. Raw payload or receipt data never enters JSON syntax.
+    value code_node is string_value with staged.code
+    value payload_node is string_value with staged.payload
+    value receipt_json is to_json with staged.receipt
+    when code_node.is_error with nothing or payload_node.is_error with nothing or
+        receipt_json.is_error with nothing then
+        give framing_failure with nothing
+    end when
+    value code_json is to_json with (code_node.unwrap with nothing)
+    value payload_json is to_json with (payload_node.unwrap with nothing)
+    when code_json.is_error with nothing or payload_json.is_error with nothing then
+        give framing_failure with nothing
+    end when
+    value code_text is code_json.unwrap with nothing
+    value payload_text is payload_json.unwrap with nothing
+    value receipt_text is receipt_json.unwrap with nothing
+    !!! The fixed keys/punctuation occupy 31 bytes, plus the worker's newline.
+    !!! Preserve the existing 2 MiB worker-frame bound without raising NILData's
+    !!! per-document, nesting, or node limits.
+    value frame_size is (the length of code_text) plus (the length of payload_text) plus
+        (the length of receipt_text) plus 32
+    when frame_size is greater than 2097152 then
+        give framing_failure with nothing
+    end when
+    give "{" plus quote plus "code" plus quote plus ":" plus code_text plus
+        "," plus quote plus "payload" plus quote plus ":" plus payload_text plus
+        "," plus quote plus "receipt" plus quote plus ":" plus receipt_text plus "}"
 end paragraph
 
 caller_ok receives node as `Value` returns boolean begin paragraph
@@ -111,6 +158,54 @@ make_claim receives node as `Value` returns proposition begin paragraph
     give build proposition with subject being (get_text with node being node, key being "subject"),
         relation being (get_text with node being node, key being "relation"),
         object_value being (get_text with node being node, key being "object_value")
+end paragraph
+
+selector_ok receives node as `Value`, key as text returns boolean begin paragraph
+    value selected is field_value with node being node, key being key
+    value shape is kind with selected
+    when shape.is_error with nothing then
+        give no
+    end when
+    when (shape.unwrap with nothing) equals "null" then
+        give yes
+    end when
+    give text_ok with node being node, key being key, minimum being 1, maximum being 256
+end paragraph
+
+pattern_ok receives node as `Value` returns boolean begin paragraph
+    value keys as array of text is ["subject", "relation", "object_value"]
+    give (exact_object with node being node, keys being keys) and
+        (selector_ok with node being node, key being "subject") and
+        (selector_ok with node being node, key being "relation") and
+        (selector_ok with node being node, key being "object_value")
+end paragraph
+
+make_selector receives node as `Value`, key as text returns Option of text begin paragraph
+    value found is field_text with node being node, key being key
+    when found.is_error with nothing then
+        give Option.None
+    end when
+    give Option.Some holding (found.unwrap with nothing)
+end paragraph
+
+make_pattern receives node as `Value` returns evidence_pattern begin paragraph
+    give build evidence_pattern with subject being (make_selector with node being node, key being "subject"),
+        relation being (make_selector with node being node, key being "relation"),
+        object_value being (make_selector with node being node, key being "object_value")
+end paragraph
+
+evidence_json receives evidence as evidence_item returns `Value` begin paragraph
+    variable item is empty_object with nothing
+    set item to put_number with node being item, key being "id", input being evidence.id
+    set item to put_text with node being item, key being "subject", input being evidence.subject
+    set item to put_text with node being item, key being "relation", input being evidence.relation
+    set item to put_text with node being item, key being "object_value", input being evidence.object_value
+    set item to put_boolean with node being item, key being "supports", input being evidence.supports
+    set item to put_text with node being item, key being "source", input being evidence.source
+    set item to put_text with node being item, key being "entity", input being evidence.entity
+    set item to put_number with node being item, key being "session", input being evidence.session
+    set item to put_number with node being item, key being "asserted_at", input being evidence.asserted_at
+    give put_number with node being item, key being "withdrawn_at", input being evidence.withdrawn_at
 end paragraph
 
 dispatch receives snapshot as durable_state, request as `Value` returns `Value` begin paragraph
@@ -158,7 +253,7 @@ dispatch receives snapshot as durable_state, request as `Value` returns `Value` 
     end when
 
     variable right as number is 0
-    when operation equals "resolve" or operation equals "inspect" then
+    when operation equals "resolve" or operation equals "inspect" or operation equals "discover" then
         set right to 1
     end when
     when operation equals "support" or operation equals "oppose" then
@@ -243,18 +338,41 @@ dispatch receives snapshot as durable_state, request as `Value` returns `Value` 
             as_of being (get_number with node being request, key being "as_of")
         variable receipt is bound_receipt with code being observed.code, snapshot being snapshot
         set receipt to put_number with node being receipt, key being "revision", input being observed.revision
-        variable item is empty_object with nothing
-        set item to put_number with node being item, key being "id", input being observed.evidence.id
-        set item to put_text with node being item, key being "subject", input being observed.evidence.subject
-        set item to put_text with node being item, key being "relation", input being observed.evidence.relation
-        set item to put_text with node being item, key being "object_value", input being observed.evidence.object_value
-        set item to put_boolean with node being item, key being "supports", input being observed.evidence.supports
-        set item to put_text with node being item, key being "source", input being observed.evidence.source
-        set item to put_text with node being item, key being "entity", input being observed.evidence.entity
-        set item to put_number with node being item, key being "session", input being observed.evidence.session
-        set item to put_number with node being item, key being "asserted_at", input being observed.evidence.asserted_at
-        set item to put_number with node being item, key being "withdrawn_at", input being observed.evidence.withdrawn_at
+        value item is evidence_json with evidence being observed.evidence
         give (object_set with receipt, "evidence", item).unwrap with nothing
+    end when
+
+    when operation equals "discover" then
+        value keys as array of text is ["op", "instance", "caller", "grant_id", "pattern", "as_of", "max_work", "max_evidence"]
+        value pattern_node is field_value with node being request, key being "pattern"
+        when not (exact_object with node being request, keys being keys) or
+            not (pattern_ok with node being pattern_node) or
+            not (number_ok with node being request, key being "as_of") or
+            not (number_ok with node being request, key being "max_work") or
+            not (number_ok with node being request, key being "max_evidence") then
+            give base_receipt with code being "invalid"
+        end when
+        value observed is discover with store being snapshot.store, authority being snapshot.authority,
+            caller being caller, grant_id being grant_id, scope being snapshot.store.scope_name,
+            pattern being (make_pattern with node being pattern_node), as_of being (get_number with node being request, key being "as_of"),
+            max_work being (get_number with node being request, key being "max_work"),
+            max_evidence being (get_number with node being request, key being "max_evidence")
+        when observed.code does not equal "ok" then
+            give base_receipt with code being observed.code
+        end when
+        variable receipt is bound_receipt with code being observed.code, snapshot being snapshot
+        set receipt to put_number with node being receipt, key being "revision", input being observed.revision
+        set receipt to put_number with node being receipt, key being "retained_from", input being observed.retained_from
+        set receipt to put_boolean with node being receipt, key being "complete", input being observed.complete
+        set receipt to put_boolean with node being receipt, key being "evidence_complete", input being observed.evidence_complete
+        set receipt to put_number with node being receipt, key being "inspected", input being observed.inspected
+        set receipt to put_number with node being receipt, key being "matched", input being observed.matched
+        variable items is (new_array with nothing).unwrap with nothing
+        repeat for index from 0 to (observed.items.count with nothing)
+            value evidence is (observed.items.get with index being index).unwrap with nothing
+            set items to (array_append with items, (evidence_json with evidence being evidence)).unwrap with nothing
+        end repeat
+        give (object_set with receipt, "items", items).unwrap with nothing
     end when
 
     value claim_node is field_value with node being request, key being "claim"
@@ -302,7 +420,7 @@ dispatch receives snapshot as durable_state, request as `Value` returns `Value` 
     give (object_set with receipt, "evidence_ids", ids).unwrap with nothing
 end paragraph
 
-public stage_request receives input as text returns text begin paragraph
+public stage_request_typed receives input as text returns staging_result begin paragraph
     when (the length of input) is greater than 1048576 then
         give failed_packet with code being "invalid"
     end when
@@ -379,6 +497,12 @@ public stage_request receives input as text returns text begin paragraph
         give failed_packet with code being "corrupt"
     end when
     give packet with code being "ok", payload being encoded.payload, receipt being receipt
+end paragraph
+
+!!! The separate worker retains its original single-JSON-line protocol. Its
+!!! bounded frame can be larger than either independently validated document.
+public stage_request receives input as text returns text begin paragraph
+    give encode_staging_result with staged being (stage_request_typed with input being input)
 end paragraph
 
 note if_test_mode
@@ -484,4 +608,80 @@ invalid_primary_is_never_replaced_with_empty_authority begin test
     expect (get_text with node being reply, key being "payload") equals ""
     value malformed is (from_json with (stage_request with input being "not json")).unwrap with nothing
     expect (get_text with node being malformed, key being "code") equals "invalid"
+end test
+
+note suite "enigma.storage.worker"
+typed_staging_preserves_strict_request_validation_and_wire_semantics begin test
+    value snapshot is test_snapshot with nothing
+    value encoded is encode_state with snapshot being snapshot
+    value input is test_envelope with mode being "recover", payload being encoded.payload,
+        incarnation being "after-recovery", request being (empty_object with nothing)
+    value typed is stage_request_typed with input being input
+    value wire is (from_json with (stage_request with input being input)).unwrap with nothing
+    expect typed.code equals (get_text with node being wire, key being "code")
+    expect typed.payload equals (get_text with node being wire, key being "payload")
+    expect (to_json with typed.receipt).unwrap with nothing equals
+        (to_json with (field_value with node being wire, key being "receipt")).unwrap with nothing
+    value malformed is stage_request_typed with input being "not json"
+    expect malformed.code equals "invalid"
+    expect malformed.payload equals ""
+    expect (get_text with node being malformed.receipt, key being "code") equals "invalid"
+    value unsupported is test_envelope with mode being "unknown", payload being "",
+        incarnation being "after-recovery", request being (empty_object with nothing)
+    expect (stage_request_typed with input being unsupported).code equals "invalid"
+end test
+
+note suite "enigma.storage.worker"
+transport_json_quotes_components_before_framing begin test
+    value payload is "payload:" plus quote plus "}," plus quote plus "receipt" plus quote plus ":null" plus newline plus "\tail"
+    value receipt is put_text with node being (empty_object with nothing), key being "note", input being quote plus newline plus "\"
+    value framed is encode_staging_result with staged being (packet with code being "ok", payload being payload, receipt being receipt)
+    value decoded is (from_json with framed).unwrap with nothing
+    value keys as array of text is ["code", "payload", "receipt"]
+    expect exact_object with node being decoded, keys being keys
+    expect (get_text with node being decoded, key being "payload") equals payload
+    expect (get_text with node being (field_value with node being decoded, key being "receipt"), key being "note") equals quote plus newline plus "\"
+    !!! Small frames remain byte-identical to the original NILData envelope.
+    variable expected is put_text with node being (empty_object with nothing), key being "code", input being "ok"
+    set expected to put_text with node being expected, key being "payload", input being payload
+    set expected to (object_set with expected, "receipt", receipt).unwrap with nothing
+    expect framed equals (to_json with expected).unwrap with nothing
+end test
+
+note suite "enigma.storage.worker"
+transport_frame_may_exceed_a_document_but_never_exceeds_its_bound begin test
+    variable chunk as text is "x"
+    repeat for index from 0 to 18
+        set chunk to chunk plus chunk
+    end repeat
+    value payload is chunk plus chunk plus chunk
+    value receipt is put_text with node being (empty_object with nothing), key being "data", input being chunk plus chunk
+    value framed is encode_staging_result with staged being (packet with code being "ok", payload being payload, receipt being receipt)
+    expect (the length of framed) is greater than 1048576
+    expect (the length of framed) is less than 2097152
+    !!! NILData's ordinary document limit remains unchanged; only the narrow
+    !!! worker transport joins already validated fragments beyond that bound.
+    expect (from_json with framed).is_error with nothing
+    !!! Exercise the inclusive frame limit itself, using components that each
+    !!! remain within NILData's independent document bound. One more receipt
+    !!! byte must fail because the external worker still appends a newline.
+    value full is chunk plus chunk plus chunk plus chunk
+    value edge_payload is substring with s being full, start being 0, length being 1048574
+    value edge_data is substring with s being full, start being 0, length being 1048529
+    value edge_receipt is put_text with node being (empty_object with nothing), key being "data", input being edge_data
+    value at_edge is encode_staging_result with staged being (packet with code being "ok",
+        payload being edge_payload, receipt being edge_receipt)
+    expect (the length of at_edge) equals 2097151
+    value larger_receipt is put_text with node being (empty_object with nothing), key being "data", input being edge_data plus "x"
+    value refused is encode_staging_result with staged being (packet with code being "ok",
+        payload being edge_payload, receipt being larger_receipt)
+    expect (the length of refused) is less than 128
+    value rejected is (from_json with refused).unwrap with nothing
+    expect (get_text with node being rejected, key being "code") equals "invalid"
+    expect (get_text with node being rejected, key being "payload") equals ""
+    value failure is field_value with node being rejected, key being "receipt"
+    value failure_keys as array of text is ["code", "generation", "instance"]
+    expect exact_object with node being failure, keys being failure_keys
+    expect (get_text with node being failure, key being "instance") equals ""
+    expect (get_number with node being failure, key being "generation") equals 0
 end test

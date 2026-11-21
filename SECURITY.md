@@ -27,8 +27,10 @@ and [ENI-0002](docs/design/ENI-0002-durable-state-and-recovery.md) for persisten
 
 ## Durable acknowledgements and recovery
 
-Only `scripts/store.py` publishes durable receipts. The Matrix worker stages a
-candidate; its reply alone is not a durable acknowledgement. The POSIX host
+The default durable receipts come through `scripts/store.py`; the optional
+Matrix host follows the same commit contract under
+[ENI-0003](docs/design/ENI-0003-matrix-durable-host.md). A staging reply alone
+is not a durable acknowledgement. The POSIX host
 holds an exclusive nonblocking advisory writer lock, writes a private candidate,
 syncs the file, atomically replaces the canonical checkpoint, and syncs the
 database directory before returning the receipt. Initial creation also syncs
@@ -114,6 +116,10 @@ and then claim that old authority has been recovered safely.
 - Resolution distinguishes support, opposition, disagreement, and absence of
   evidence. A work-limited scan reports `incomplete`; an evidence-list cap is
   reported separately. Neither evidence state nor a source label proves truth.
+- Discovery requires the same current read authority and returns active reports
+  in that scope. Selectors are exact text or explicit any values; text never
+  creates an operator. Partial counts are lower bounds, and an empty partial
+  list does not establish absence. Current authority applies to every snapshot.
 - Each store holds at most 128 retained events; a caller with explicit scoped
   compaction authority (`16`) may compact retracted evidence. Withdrawal of
   one's own assertions (`4`) does not authorize deletion of scope-wide history.

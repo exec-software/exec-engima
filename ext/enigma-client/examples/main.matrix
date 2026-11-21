@@ -2,6 +2,8 @@ book enigma.client_example
 
 read access_context, open_authority from enigma.authority
 read proposition, open_store from enigma.ledger
+read evidence_pattern from enigma.discovery
+read everything from nil.std.core.option
 read connect, describe_surface from enigma.client
 
 main returns override integer begin paragraph
@@ -31,6 +33,18 @@ main returns override integer begin paragraph
     value historical_answer is adapter.resolve with claim being claim, as_of being second_write.revision, max_work being 128, max_evidence being 128
     say "After withdrawal: " plus current_answer.state
     say "At the earlier revision: " plus historical_answer.state
+
+    !!! Discover propositions without supplying their complete triple. None
+    !!! means any value; Some is exact data, never wildcard query syntax.
+    value related is build evidence_pattern with subject being Option.None,
+        relation being (Option.Some holding "ready-for"), object_value being Option.None
+    value discovered is adapter.discover with pattern being related, as_of being minus 1,
+        max_work being 128, max_evidence being 128
+    expect discovered.code equals "ok"
+    expect discovered.complete
+    expect discovered.evidence_complete
+    expect discovered.matched equals 1
+    expect ((discovered.items.get with index being 0).unwrap with nothing).source equals "fixture:passing-checks"
 
     value bounded_answer is adapter.resolve with claim being claim, as_of being minus 1, max_work being 1, max_evidence being 1
     say "Bounded query complete:"

@@ -2,6 +2,8 @@ book enigma.client
 
 read access_context, authority_registry, open_authority from enigma.authority
 read proposition, evidence_store, write_receipt, resolution, inspect_receipt, open_store from enigma.ledger
+read everything from nil.std.core.option
+read evidence_pattern, discovery_result from enigma.discovery
 
 !!! A discoverable operation contract, not an authentication mechanism.
 public surface_info begin record
@@ -24,7 +26,7 @@ public compaction_receipt begin record
 end record
 
 public describe_surface returns surface_info begin paragraph
-    give build surface_info with protocol being "enigma.evidence.v1", model being "evidence", operations being ["support", "oppose", "resolve", "inspect", "withdraw", "compact"], max_events being 128, max_text_units being 256, max_scope_units being 128, latest_revision_sentinel being minus 1, supports_persistence being no, requires_trusted_host being yes
+    give build surface_info with protocol being "enigma.evidence.v1", model being "evidence", operations being ["support", "oppose", "resolve", "inspect", "withdraw", "compact", "discover"], max_events being 128, max_text_units being 256, max_scope_units being 128, latest_revision_sentinel being minus 1, supports_persistence being no, requires_trusted_host being yes
 end paragraph
 
 !!! The host supplies authority and context. This package never mints grants.
@@ -62,6 +64,14 @@ public evidence_client begin class
     public inspect receives evidence_id as number, as_of as number returns inspect_receipt begin paragraph
         give my host_store.inspect with authority being my host_authority, caller being my host_context, grant_id being my grant_id, scope being my scope, evidence_id being evidence_id, as_of being as_of
     end paragraph
+
+    public discover receives pattern as evidence_pattern, as_of as number,
+        max_work as number, max_evidence as number returns discovery_result begin paragraph
+        give enigma.discovery::discover with store being my host_store,
+            authority being my host_authority, caller being my host_context,
+            grant_id being my grant_id, scope being my scope, pattern being pattern,
+            as_of being as_of, max_work being max_work, max_evidence being max_evidence
+    end paragraph
 end class
 
 public connect receives host_store as evidence_store, host_authority as authority_registry, host_context as access_context, grant_id as number, scope as text returns evidence_client begin paragraph
@@ -89,8 +99,9 @@ describes_typed_surface_and_current_limits begin test
     value surface is describe_surface with nothing
     expect surface.protocol equals "enigma.evidence.v1"
     expect surface.model equals "evidence"
-    expect (the length of surface.operations) equals 6
+    expect (the length of surface.operations) equals 7
     expect (surface.operations at 5) equals "compact"
+    expect (surface.operations at 6) equals "discover"
     expect surface.max_events equals 128
     expect surface.max_text_units equals 256
     expect surface.max_scope_units equals 128
@@ -100,6 +111,123 @@ describes_typed_surface_and_current_limits begin test
     set surface.operations at 0 to "changed"
     value fresh_surface is describe_surface with nothing
     expect (fresh_surface.operations at 0) equals "support"
+end test
+
+note suite "enigma.client"
+discovery_uses_explicit_any_selectors_and_literal_text begin test
+    value adapter is fixture_client with operations being 7
+    value literal is build proposition with subject being "literal:*", relation being "reports", object_value being "*"
+    value different is build proposition with subject being "literal:*", relation being "reports", object_value being "review"
+    value first is adapter.support with claim being literal, source being "fixture:literal", expected_revision being 0
+    value second is adapter.oppose with claim being different, source being "fixture:different", expected_revision being first.revision
+    expect second.code equals "ok"
+    value selected is build evidence_pattern with subject being (Option.Some holding "literal:*"),
+        relation being Option.None, object_value being (Option.Some holding "*")
+    value found is adapter.discover with pattern being selected, as_of being minus 1,
+        max_work being 128, max_evidence being 128
+    expect found.code equals "ok"
+    expect found.complete
+    expect found.evidence_complete
+    expect found.matched equals 1
+    expect (found.items.count with nothing) equals 1
+    expect ((found.items.get with index being 0).unwrap with nothing).id equals first.evidence_id
+    expect ((found.items.get with index being 0).unwrap with nothing).source equals "fixture:literal"
+    expect ((found.items.get with index being 0).unwrap with nothing).supports
+    expect ((found.items.get with index being 0).unwrap with nothing).entity equals "client-test-agent"
+    expect ((found.items.get with index being 0).unwrap with nothing).session equals 1
+end test
+
+note suite "enigma.client"
+discovery_preserves_work_output_and_zero_snapshot_parameters begin test
+    value adapter is fixture_client with operations being 7
+    value claim is fixture_proposition with nothing
+    value first is adapter.support with claim being claim, source being "fixture:first", expected_revision being 0
+    value second is adapter.oppose with claim being claim, source being "fixture:second", expected_revision being first.revision
+    expect second.code equals "ok"
+    value any is build evidence_pattern with subject being Option.None,
+        relation being Option.None, object_value being Option.None
+    value bounded is adapter.discover with pattern being any, as_of being minus 1,
+        max_work being 1, max_evidence being 128
+    expect bounded.code equals "ok"
+    expect bounded.revision equals second.revision
+    expect bounded.inspected equals 1
+    expect not bounded.complete
+    expect not bounded.evidence_complete
+    expect bounded.matched equals 1
+    expect ((bounded.items.get with index being 0).unwrap with nothing).id equals second.evidence_id
+    value capped is adapter.discover with pattern being any, as_of being minus 1,
+        max_work being 128, max_evidence being 1
+    expect capped.complete
+    expect not capped.evidence_complete
+    expect capped.matched equals 2
+    expect (capped.items.count with nothing) equals 1
+    expect ((capped.items.get with index being 0).unwrap with nothing).id equals second.evidence_id
+    value empty is adapter.discover with pattern being any, as_of being 0,
+        max_work being 1, max_evidence being 1
+    expect empty.code equals "ok"
+    expect empty.revision equals 0
+    expect empty.inspected equals 0
+    expect empty.complete
+    expect empty.evidence_complete
+    expect empty.matched equals 0
+    expect (empty.items.count with nothing) equals 0
+end test
+
+note suite "enigma.client"
+discovery_keeps_historical_withdrawals_and_retention_explicit begin test
+    value adapter is fixture_client with operations being 23
+    value claim is fixture_proposition with nothing
+    value supported is adapter.support with claim being claim, source being "fixture:support", expected_revision being 0
+    value opposed is adapter.oppose with claim being claim, source being "fixture:opposition", expected_revision being supported.revision
+    value removed is adapter.withdraw with evidence_id being opposed.evidence_id, expected_revision being opposed.revision
+    expect removed.code equals "ok"
+    value any is build evidence_pattern with subject being Option.None,
+        relation being Option.None, object_value being Option.None
+    value historical is adapter.discover with pattern being any, as_of being opposed.revision,
+        max_work being 128, max_evidence being 128
+    expect historical.complete
+    expect historical.matched equals 2
+    expect ((historical.items.get with index being 0).unwrap with nothing).id equals opposed.evidence_id
+    expect not ((historical.items.get with index being 0).unwrap with nothing).supports
+    expect ((historical.items.get with index being 0).unwrap with nothing).withdrawn_at equals 0
+    value latest is adapter.discover with pattern being any, as_of being minus 1,
+        max_work being 128, max_evidence being 128
+    expect latest.complete
+    expect latest.matched equals 1
+    expect ((latest.items.get with index being 0).unwrap with nothing).id equals supported.evidence_id
+    value compacted is adapter.compact with nothing
+    expect compacted.code equals "ok"
+    value unavailable is adapter.discover with pattern being any, as_of being opposed.revision,
+        max_work being 128, max_evidence being 128
+    expect unavailable.retained_from equals removed.revision
+    expect not unavailable.complete
+    expect not unavailable.evidence_complete
+    value current is adapter.discover with pattern being any, as_of being minus 1,
+        max_work being 128, max_evidence being 128
+    expect current.complete
+    expect current.matched equals 1
+end test
+
+note suite "enigma.client"
+discovery_rechecks_live_authority_even_for_historical_evidence begin test
+    value adapter is fixture_client with operations being 7
+    value claim is fixture_proposition with nothing
+    value written is adapter.support with claim being claim, source being "fixture:before-revoke", expected_revision being 0
+    expect written.code equals "ok"
+    value revoked is adapter.host_authority.revoke with caller being adapter.host_context, grant_id being adapter.grant_id
+    expect revoked.code equals "ok"
+    value any is build evidence_pattern with subject being Option.None,
+        relation being Option.None, object_value being Option.None
+    value denied is adapter.discover with pattern being any, as_of being written.revision,
+        max_work being 128, max_evidence being 128
+    expect denied.code equals "denied"
+    expect denied.revision equals 0
+    expect denied.retained_from equals 0
+    expect denied.inspected equals 0
+    expect denied.matched equals 0
+    expect not denied.complete
+    expect not denied.evidence_complete
+    expect (denied.items.count with nothing) equals 0
 end test
 
 note suite "enigma.client"

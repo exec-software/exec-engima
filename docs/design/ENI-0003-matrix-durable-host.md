@@ -54,6 +54,14 @@ Item 3 is not redundant internal assertion. It is the only remaining check that
 a staged candidate is a legitimate successor to committed state, and it must run
 before publication, not after.
 
+Discovery adds one internal framing refinement in
+[ENI-0006](ENI-0006-bounded-evidence-discovery.md). A full checkpoint and result
+can exceed NILData's 1 MiB limit when combined in one value. Staging therefore
+returns typed reply parts to the Matrix host, which keeps the same candidate
+checks. The request envelope remains serialized and strictly decoded. The
+Python worker receives the same bounded JSON packet, assembled from separately
+NILData-encoded parts; its existing 2 MiB transport limit is unchanged.
+
 ## Required library surfaces
 
 Three mechanisms were outside Matrix. Each already existed and was exercised
@@ -172,11 +180,12 @@ Each phase is independently qualified and leaves a working tree.
   second hard link, which `store.py` rejects — and the host now performs that
   preflight explicitly.
 
-  What the move still needs is a released SDK. The Matrix host requires
-  NIL-0028 through NIL-0030 and a native `random.hex`, none of which an
-  installed SDK has, so making it the default would leave `./scripts/test.sh`
-  unrunnable for anyone without a development build. `scripts/store.py`
-  therefore stays the qualified path, and nothing is retired.
+  The Matrix host's NIL-0028 through NIL-0030 and native `random.hex` dependencies
+  still need release-SDK qualification. `scripts/store.py` stays the default
+  while that cutover remains separate. Discovery subsequently requires a newer
+  compiler for optional-text fields too; its minimum source revision is explicit
+  in the development guide. An unchanged SDK version string proves neither
+  compiler nor filesystem support.
 
   Four scenarios remain out of reach without a seam, and are not claimed: a
   partial write followed by success, a crash at a chosen commit phase, a
