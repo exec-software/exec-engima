@@ -89,6 +89,10 @@ clients if needed. Close it explicitly during application shutdown. The owner
 holds the single-writer lock until close. A second owner of the same store is
 refused rather than queued.
 
+If a server invokes Matrix separately for each request, keep the owner in a
+long-lived storage loop or use the host protocol. Do not retain a live owner
+across separate NIL invocations; the runtime closes its lock at that boundary.
+
 Each dispatch checks runtime lock ownership. A handle retained beyond its NIL
 execution, or a handle that lost its lock, cannot resume authority. Storage or
 protocol failures poison the owner and prevent subsequent requests. Working

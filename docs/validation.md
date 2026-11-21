@@ -1,5 +1,58 @@
 # Development validation
 
+## Durable application integration — 2026-11-20
+
+Application source is
+[`d2fe038`](https://github.com/exec-software/exec-enigma/commit/d2fe0389c5ab4b1f1eba7144ffe982d9338a4b0c).
+The matching complete development SDK is built from clean NIL source
+[`dbb4379`](https://github.com/exec-software/exec-nil-framework/commit/dbb4379946f6800a79e485dcd890e8f5b0902b31),
+including `file_lock_is_held` in
+[NIL PR #42](https://github.com/exec-software/exec-nil-framework/pull/42).
+Its manifest reports `worktree_dirty: false`, and the workspace's ignored `.sdk`
+link selects that immutable generation.
+
+These commands pass on Linux x86_64:
+
+```sh
+./scripts/test-durable-client.sh
+./scripts/test-matrix-host.sh
+./scripts/test.sh
+```
+
+- The application runner passes 44 Matrix executions across VM/native: five
+  typed codec/reply tests and 17 shared session/host tests per route.
+- Nine independent Python application tests pass on both routes. They exercise
+  all nine typed operations, separate-process create/reopen, old-grant refusal,
+  fresh admission, revocation, contention, explicit close, failed-open cleanup,
+  stale-owner refusal, poisoned-session refusal after external storage failure,
+  working-directory pinning, literal POSIX backslashes/UTF-8, and a full-width
+  128-report typed discovery batch. Lock release is checked while the application
+  process is still alive.
+- The refactored CLI passes the existing 13 recovery and six storage-fault tests
+  against Matrix VM, Matrix native, and Python hosts. Both checkpoint
+  interoperability directions pass. The same 17 shared Matrix tests also run
+  through that host project.
+- Core regressions pass 170 Matrix executions, 24 CLI checks, both volatile
+  package examples, and the existing Python persistence tests. Application and
+  host-fault cases deferred by that default runner execute in the dedicated
+  runners above.
+- Seven focused NIL helper, embedded-VM lifecycle, Ny/Matrix route, native ABI,
+  and ordinary-I/O groups pass. They include current/stale/foreign lock queries,
+  invocation teardown, and forged return-schema rejection.
+
+The SDK was packaged in development mode with `NIL_RUN_TESTS=OFF`; focused NIL
+checks ran separately. Its runtime source remains pinned at `dbb4379`; later
+branch documentation records the open Matrix imported-choice naming defect
+(F93) found during integration. Application code avoids that defect without
+relaxing the loader. Direct typed reply records preserve the existing closed
+class-provenance profile rather than putting a class-bearing discovery result
+inside a general enum carrier.
+
+This validates the bounded POSIX application integration, not full NIL-suite,
+release-SDK, production-data, or hardware power-cut qualification. See
+[the application guide](applications.md) and
+[ENI-0007](design/ENI-0007-application-sessions.md).
+
 ## Bounded discovery — 2026-11-20
 
 Engine source is
