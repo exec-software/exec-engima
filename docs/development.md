@@ -37,6 +37,11 @@ That SDK reports a dirty source tree, so its version string is not a reproducibl
 upstream dependency pin. Clean upstream SDK qualification, a pinned toolchain,
 and hosted CI are follow-up work; no prebuilt release is assumed.
 
+The current retention and durable-host slice also has a clean source-pinned
+development SDK validation. See [the validation record](validation.md) for the
+NIL revision, commands, results, and qualification limits. The framework changes
+are proposed in [NIL PR #42](https://github.com/exec-software/exec-nil-framework/pull/42).
+
 ## Daily commands
 
 From the Enigma project directory:

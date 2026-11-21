@@ -248,8 +248,9 @@ every grant ever issued, per [ENI-0004](ENI-0004-authority-capacity.md). Grants
 revoked during a session still occupy rows until recovery; exhaustion fails closed.
 
 NIL-0028 is a Linux-tested POSIX source-runtime profile, not an installed or
-release SDK. It is committed on the framework's `codex/enigma-durable-io`
-branch. Until it is released, a Matrix host builds only
+release SDK. The framework additions are published on `codex/enigma-durable-io`
+in [draft PR #42](https://github.com/exec-software/exec-nil-framework/pull/42),
+with [focused consumer validation](../validation.md). Until released, a Matrix host builds only
 against a matching development SDK, and the port cannot be the only supported
 path. Non-Linux POSIX platforms need their own execution evidence; Windows
 returns an explicit unsupported-platform error before filesystem mutation.
